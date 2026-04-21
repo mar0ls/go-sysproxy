@@ -1,3 +1,3 @@
-module github.com/marols3/go-sysproxy
+module github.com/mar0ls/go-sysproxy
 
-go 1.21
+go 1.22
