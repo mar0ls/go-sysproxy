@@ -1,3 +1,4 @@
+version: 1
 linters:
   enable:
     - errcheck
@@ -17,8 +18,6 @@ linters:
     - goimports
 
 linters-settings:
-  errcheck:
-    check-blank: true
   govet:
     enable-all: true
 
