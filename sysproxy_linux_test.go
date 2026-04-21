@@ -37,7 +37,7 @@ func TestWriteEtcEnvironment(t *testing.T) {
 func TestWriteEtcEnvironmentPreservesExistingLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "environment")
 	existing := "EDITOR=vim\nPATH=/usr/local/bin\n"
-	if err := os.WriteFile(path, []byte(existing), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,7 +58,7 @@ func TestWriteEtcEnvironmentPreservesExistingLines(t *testing.T) {
 func TestWriteEtcEnvironmentReplacesOldProxy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "environment")
 	old := "http_proxy=http://old:1111\nHTTP_PROXY=http://old:1111\n"
-	if err := os.WriteFile(path, []byte(old), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -79,7 +79,7 @@ func TestWriteEtcEnvironmentReplacesOldProxy(t *testing.T) {
 func TestClearEtcEnvironment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "environment")
 	content := "EDITOR=vim\nhttp_proxy=http://proxy.example.com:8080\nHTTP_PROXY=http://proxy.example.com:8080\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

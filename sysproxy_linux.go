@@ -10,11 +10,11 @@ import (
 )
 
 func runGsettings(args ...string) error {
-	return exec.Command("gsettings", args...).Run() //nolint:noctx
+	return exec.Command("gsettings", args...).Run() //nolint:noctx,gosec
 }
 
 func runKwriteconfig5(args ...string) error {
-	return exec.Command("kwriteconfig5", args...).Run() //nolint:noctx
+	return exec.Command("kwriteconfig5", args...).Run() //nolint:noctx,gosec
 }
 
 func setGlobal(p *proxy) error {
@@ -164,7 +164,7 @@ func writeEtcEnvironment(path, proxyURL string) error {
 		"no_proxy=localhost,127.0.0.1,::1",
 		"NO_PROXY=localhost,127.0.0.1,::1",
 	)
-	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0644); err != nil { //nolint:gosec
+	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o644); err != nil { //nolint:gosec
 		return fmt.Errorf("sysproxy: %s write failed (root required for system-wide effect): %w", path, err)
 	}
 	return nil
@@ -188,5 +188,5 @@ func clearEtcEnvironment(path string) error {
 			kept = append(kept, line)
 		}
 	}
-	return os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0644) //nolint:gosec
+	return os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o644) //nolint:gosec
 }
