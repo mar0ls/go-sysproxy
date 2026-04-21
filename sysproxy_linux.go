@@ -140,7 +140,7 @@ func detectDesktopEnv() string {
 }
 
 func writeEtcEnvironment(path, proxyURL string) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -171,7 +171,7 @@ func writeEtcEnvironment(path, proxyURL string) error {
 }
 
 func clearEtcEnvironment(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec
 	if err != nil {
 		return nil // file absent is fine
 	}

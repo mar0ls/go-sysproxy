@@ -16,7 +16,7 @@ func TestWriteEtcEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestWriteEtcEnvironmentPreservesExistingLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec
 	content := string(data)
 	if !strings.Contains(content, "EDITOR=vim") {
 		t.Error("EDITOR=vim should be preserved")
@@ -66,7 +66,7 @@ func TestWriteEtcEnvironmentReplacesOldProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec
 	content := string(data)
 	if strings.Contains(content, "old:1111") {
 		t.Error("old proxy value should have been replaced")
@@ -87,7 +87,7 @@ func TestClearEtcEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec
 	result := string(data)
 	if strings.Contains(result, "http_proxy") || strings.Contains(result, "HTTP_PROXY") {
 		t.Error("proxy keys should be removed")
