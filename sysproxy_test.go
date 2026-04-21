@@ -201,7 +201,7 @@ func TestWriteAppConfigCurl(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(home + "/.curlrc")
+	data, err := os.ReadFile(home + "/.curlrc") //nolint:gosec
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestClearAppConfigCurl(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, _ := os.ReadFile(home + "/.curlrc")
+	data, _ := os.ReadFile(home + "/.curlrc") //nolint:gosec
 	if strings.Contains(string(data), "proxy") {
 		t.Errorf("proxy should be removed, got: %s", data)
 	}
@@ -233,7 +233,7 @@ func TestWriteAppConfigPip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(home + "/.config/pip/pip.conf")
+	data, err := os.ReadFile(home + "/.config/pip/pip.conf") //nolint:gosec
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestWriteAppConfigWget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, _ := os.ReadFile(home + "/.wgetrc")
+	data, _ := os.ReadFile(home + "/.wgetrc") //nolint:gosec
 	if !strings.Contains(string(data), "http_proxy = http://proxy.example.com:8080") {
 		t.Errorf("unexpected .wgetrc content: %s", data)
 	}

@@ -89,7 +89,7 @@ func clearCurlRC() error {
 // ── git (git config --global) ─────────────────────────────────────────────────
 
 func runGit(args ...string) error {
-	return exec.Command("git", args...).Run() //nolint:noctx
+	return exec.Command("git", args...).Run() //nolint:noctx,gosec
 }
 
 func writeGitProxy(proxyURL string) error {
@@ -117,7 +117,7 @@ func clearGitProxy() error {
 // ── npm (npm config set) ──────────────────────────────────────────────────────
 
 func runNPM(args ...string) error {
-	return exec.Command("npm", args...).Run() //nolint:noctx
+	return exec.Command("npm", args...).Run() //nolint:noctx,gosec
 }
 
 func writeNPMProxy(proxyURL string) error {
@@ -149,7 +149,7 @@ func writePipConf(proxyURL string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	return editINIFile(path, "global", "proxy", proxyURL)
@@ -322,7 +322,11 @@ func readLines(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			logf("appconfig: close error: %v", err)
+		}
+	}()
 	var lines []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -336,5 +340,5 @@ func writeLines(path string, lines []string) error {
 	if len(lines) > 0 {
 		content += "\n"
 	}
-	return os.WriteFile(path, []byte(content), 0600) //nolint:gosec
+	return os.WriteFile(path, []byte(content), 0o600)
 }

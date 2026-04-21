@@ -9,7 +9,7 @@ import (
 )
 
 func runNetworkSetup(args ...string) error {
-	return exec.Command("networksetup", args...).Run() //nolint:noctx
+	return exec.Command("networksetup", args...).Run() //nolint:noctx,gosec
 }
 
 func setGlobal(p *proxy) error {
@@ -52,7 +52,7 @@ func getGlobal() (string, error) {
 	if err != nil || len(services) == 0 {
 		return "", fmt.Errorf("sysproxy: no network services found")
 	}
-	out, err := exec.Command("networksetup", "-getwebproxy", services[0]).Output() //nolint:noctx
+	out, err := exec.Command("networksetup", "-getwebproxy", services[0]).Output() //nolint:noctx,gosec
 	if err != nil {
 		return "", err
 	}

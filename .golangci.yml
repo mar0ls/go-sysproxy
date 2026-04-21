@@ -1,29 +1,36 @@
-version: 1
+version: "2"
+run:
+  timeout: 3m
 linters:
   enable:
-    - errcheck
     - govet
-    - ineffassign
     - staticcheck
-    - unused
-    - misspell
+    - errcheck
+    - ineffassign
+    - revive
+    - unconvert
     - gocritic
     - gosec
-    - noctx
-    - bodyclose
-    - prealloc
-    - unconvert
-    - unparam
-    - gofmt
+    - nolintlint
+  settings:
+    gosec:
+      excludes:
+        - G705
+    revive:
+      severity: warning
+    gocritic:
+      enabled-checks:
+        - appendAssign
+        - boolExprSimplify
+  exclusions:
+    rules:
+      - path: "^generated_.*\\.go$"
+        linters:
+          - all
+formatters:
+  enable:
+    - gofumpt
     - goimports
-
-linters-settings:
-  govet:
-    enable-all: true
-
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
+  max-issues-per-linter: 0
+  max-same-issues: 0

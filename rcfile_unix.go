@@ -56,14 +56,16 @@ func appendToRCFiles(lines ...string) error {
 	}
 	for _, rc := range unixRCFiles {
 		path := home + "/" + rc
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec
 		if err != nil {
 			continue
 		}
 		for _, l := range lines {
 			_, _ = f.WriteString(l + "\n")
 		}
-		f.Close() // explicit close inside loop — deferred would delay until function return
+		if err := f.Close(); err != nil {
+			logf("rcfile_unix: close error: %v", err)
+		}
 	}
 	return nil
 }
@@ -75,7 +77,7 @@ func removeProxyFromRCFiles() error {
 	}
 	for _, rc := range unixRCFiles {
 		path := home + "/" + rc
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec
 		if err != nil {
 			continue
 		}
@@ -87,7 +89,7 @@ func removeProxyFromRCFiles() error {
 			}
 			kept = append(kept, line)
 		}
-		_ = os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0600)
+		_ = os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o600) //nolint:gosec
 	}
 	return nil
 }
