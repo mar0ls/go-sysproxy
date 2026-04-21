@@ -2,9 +2,9 @@ name: Go
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main"]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "main"]
 
 jobs:
   test:
@@ -22,5 +22,5 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.10.1
+          version: v2.11.4
           args: --timeout=5m

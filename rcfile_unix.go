@@ -89,7 +89,7 @@ func removeProxyFromRCFiles() error {
 			}
 			kept = append(kept, line)
 		}
-		_ = os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o600) //nolint:gosec
+		_ = os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o600) //nolint:gosec,nolintlint
 	}
 	return nil
 }
