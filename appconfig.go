@@ -12,6 +12,7 @@ import (
 // AppName identifies a supported application for WriteAppConfig.
 type AppName string
 
+// Supported application names for WriteAppConfig and ClearAppConfig.
 const (
 	AppCurl AppName = "curl" // ~/.curlrc
 	AppGit  AppName = "git"  // git config --global
