@@ -8,19 +8,35 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
       - name: Install dependencies
         run: go mod tidy
       - name: Run tests
         run: go test -v ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.4
           args: --timeout=5m
+
+  ci:
+    runs-on: ubuntu-latest
+    needs: [test, lint]
+    steps:
+      - run: echo "All checks passed"
