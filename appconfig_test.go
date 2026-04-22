@@ -65,7 +65,11 @@ func readCommandLog(t *testing.T, path string) []string {
 		return nil
 	}
 
-	return strings.Split(text, "\n")
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimSuffix(line, "\r")
+	}
+	return lines
 }
 
 func TestWriteGitProxy(t *testing.T) {
