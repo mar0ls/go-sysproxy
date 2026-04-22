@@ -3,64 +3,65 @@
 package sysproxy
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 )
 
-func runGsettings(args ...string) error {
-	return exec.Command("gsettings", args...).Run() //nolint:noctx,gosec
+func runGsettings(ctx context.Context, args ...string) error {
+	return exec.CommandContext(normalizeContext(ctx), "gsettings", args...).Run() //nolint:gosec
 }
 
-func runKwriteconfig5(args ...string) error {
-	return exec.Command("kwriteconfig5", args...).Run() //nolint:noctx,gosec
+func runKwriteconfig5(ctx context.Context, args ...string) error {
+	return exec.CommandContext(normalizeContext(ctx), "kwriteconfig5", args...).Run() //nolint:gosec
 }
 
-func setGlobal(p *proxy) error {
+func setGlobal(ctx context.Context, p *proxy) error {
 	switch detectDesktopEnv() {
 	case "gnome":
 		if isAvailable("gsettings") {
-			_ = runGsettings("set", "org.gnome.system.proxy", "mode", "manual")
-			_ = runGsettings("set", "org.gnome.system.proxy.http", "host", p.host)
-			_ = runGsettings("set", "org.gnome.system.proxy.http", "port", p.port)
-			_ = runGsettings("set", "org.gnome.system.proxy.https", "host", p.host)
-			_ = runGsettings("set", "org.gnome.system.proxy.https", "port", p.port)
-			_ = runGsettings("set", "org.gnome.system.proxy.socks", "host", p.host)
-			_ = runGsettings("set", "org.gnome.system.proxy.socks", "port", p.port)
+			_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "mode", "manual")
+			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.http", "host", p.host)
+			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.http", "port", p.port)
+			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.https", "host", p.host)
+			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.https", "port", p.port)
+			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.socks", "host", p.host)
+			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.socks", "port", p.port)
 		}
 	case "kde":
 		if isAvailable("kwriteconfig5") {
-			_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "1")
-			_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpProxy", p.rawURL)
-			_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpsProxy", p.rawURL)
-			_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ftpProxy", p.rawURL)
-			_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "socksProxy", p.rawURL)
+			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "1")
+			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpProxy", p.rawURL)
+			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpsProxy", p.rawURL)
+			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ftpProxy", p.rawURL)
+			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "socksProxy", p.rawURL)
 		}
 	}
 	return writeEtcEnvironment("/etc/environment", p.rawURL)
 }
 
-func unsetGlobal() error {
+func unsetGlobal(ctx context.Context) error {
 	if isAvailable("gsettings") {
-		_ = runGsettings("set", "org.gnome.system.proxy", "mode", "none")
+		_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "mode", "none")
 	}
 	if isAvailable("kwriteconfig5") {
-		_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0")
+		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0")
 	}
 	return clearEtcEnvironment("/etc/environment")
 }
 
-func getGlobal() (string, error) {
+func getGlobal(ctx context.Context) (string, error) {
 	if !isAvailable("gsettings") {
 		return "", fmt.Errorf("sysproxy: gsettings not available")
 	}
-	out, err := exec.Command("gsettings", "get", "org.gnome.system.proxy", "mode").Output() //nolint:noctx
+	out, err := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy", "mode").Output()
 	if err != nil || !strings.Contains(string(out), "manual") {
 		return "", fmt.Errorf("sysproxy: proxy not set")
 	}
-	host, err1 := exec.Command("gsettings", "get", "org.gnome.system.proxy.http", "host").Output() //nolint:noctx
-	port, err2 := exec.Command("gsettings", "get", "org.gnome.system.proxy.http", "port").Output() //nolint:noctx
+	host, err1 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy.http", "host").Output()
+	port, err2 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy.http", "port").Output()
 	if err1 != nil || err2 != nil {
 		return "", fmt.Errorf("sysproxy: cannot read proxy settings")
 	}
@@ -72,54 +73,54 @@ func getGlobal() (string, error) {
 	return "http://" + h + ":" + p, nil
 }
 
-func setGlobalPAC(pacURL string) error {
+func setGlobalPAC(ctx context.Context, pacURL string) error {
 	switch detectDesktopEnv() {
 	case "gnome":
 		if isAvailable("gsettings") {
-			_ = runGsettings("set", "org.gnome.system.proxy", "mode", "auto")
-			_ = runGsettings("set", "org.gnome.system.proxy", "autoconfig-url", pacURL)
+			_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "mode", "auto")
+			_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "autoconfig-url", pacURL)
 		}
 	case "kde":
 		if isAvailable("kwriteconfig5") {
-			_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "2")
-			_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "Proxy Config Script", pacURL)
+			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "2")
+			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "Proxy Config Script", pacURL)
 		}
 	}
 	return nil
 }
 
-func setGlobalMulti(cfg ProxyConfig) error {
+func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 	switch detectDesktopEnv() {
 	case "gnome":
 		if isAvailable("gsettings") {
 			if cfg.HTTP != "" {
-				_ = runGsettings("set", "org.gnome.system.proxy", "mode", "manual")
-				_ = runGsettings("set", "org.gnome.system.proxy.http", "host", hostFromURL(cfg.HTTP))
-				_ = runGsettings("set", "org.gnome.system.proxy.http", "port", portFromURL(cfg.HTTP))
+				_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "mode", "manual")
+				_ = runGsettings(ctx, "set", "org.gnome.system.proxy.http", "host", hostFromURL(cfg.HTTP))
+				_ = runGsettings(ctx, "set", "org.gnome.system.proxy.http", "port", portFromURL(cfg.HTTP))
 			}
 			if cfg.HTTPS != "" {
-				_ = runGsettings("set", "org.gnome.system.proxy.https", "host", hostFromURL(cfg.HTTPS))
-				_ = runGsettings("set", "org.gnome.system.proxy.https", "port", portFromURL(cfg.HTTPS))
+				_ = runGsettings(ctx, "set", "org.gnome.system.proxy.https", "host", hostFromURL(cfg.HTTPS))
+				_ = runGsettings(ctx, "set", "org.gnome.system.proxy.https", "port", portFromURL(cfg.HTTPS))
 			}
 			if cfg.SOCKS != "" {
-				_ = runGsettings("set", "org.gnome.system.proxy.socks", "host", hostFromURL(cfg.SOCKS))
-				_ = runGsettings("set", "org.gnome.system.proxy.socks", "port", portFromURL(cfg.SOCKS))
+				_ = runGsettings(ctx, "set", "org.gnome.system.proxy.socks", "host", hostFromURL(cfg.SOCKS))
+				_ = runGsettings(ctx, "set", "org.gnome.system.proxy.socks", "port", portFromURL(cfg.SOCKS))
 			}
 		}
 	case "kde":
 		if isAvailable("kwriteconfig5") {
-			_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "1")
+			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "1")
 			if cfg.HTTP != "" {
-				_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpProxy", cfg.HTTP)
+				_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpProxy", cfg.HTTP)
 			}
 			if cfg.HTTPS != "" {
-				_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpsProxy", cfg.HTTPS)
+				_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpsProxy", cfg.HTTPS)
 			}
 			if cfg.SOCKS != "" {
-				_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "socksProxy", cfg.SOCKS)
+				_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "socksProxy", cfg.SOCKS)
 			}
 			if cfg.NoProxy != "" {
-				_ = runKwriteconfig5("--file", "kioslaverc", "--group", "Proxy Settings", "--key", "NoProxyFor", cfg.NoProxy)
+				_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "NoProxyFor", cfg.NoProxy)
 			}
 		}
 	}

@@ -23,6 +23,16 @@ func ExampleSet_noAuth() {
 	fmt.Println("proxy set")
 }
 
+func ExampleSetContext() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := sysproxy.SetContext(ctx, "http://proxy.example.com:8080", sysproxy.ScopeGlobal)
+	cancel()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("proxy set")
+}
+
 func ExampleUnset() {
 	if err := sysproxy.Unset(sysproxy.ScopeGlobal); err != nil {
 		log.Fatal(err)
@@ -69,6 +79,16 @@ func ExampleCheck() {
 
 func ExampleWriteAppConfig() {
 	if err := sysproxy.WriteAppConfig(sysproxy.AppGit, "http://proxy.example.com:8080"); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("git proxy configured")
+}
+
+func ExampleWriteAppConfigContext() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := sysproxy.WriteAppConfigContext(ctx, sysproxy.AppGit, "http://proxy.example.com:8080")
+	cancel()
+	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("git proxy configured")

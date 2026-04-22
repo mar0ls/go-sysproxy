@@ -3,56 +3,57 @@
 package sysproxy
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
 )
 
-func runNetworkSetup(args ...string) error {
-	return exec.Command("networksetup", args...).Run() //nolint:noctx,gosec
+func runNetworkSetup(ctx context.Context, args ...string) error {
+	return exec.CommandContext(normalizeContext(ctx), "networksetup", args...).Run() //nolint:gosec
 }
 
-func setGlobal(p *proxy) error {
-	services, err := macOSNetworkServices()
+func setGlobal(ctx context.Context, p *proxy) error {
+	services, err := macOSNetworkServices(ctx)
 	if err != nil {
 		return err
 	}
 	for _, svc := range services {
 		if p.user != "" {
-			_ = runNetworkSetup("-setwebproxy", svc, p.host, p.port, "on", p.user, p.pass)
-			_ = runNetworkSetup("-setsecurewebproxy", svc, p.host, p.port, "on", p.user, p.pass)
-			_ = runNetworkSetup("-setsocksfirewallproxy", svc, p.host, p.port, "on", p.user, p.pass)
+			_ = runNetworkSetup(ctx, "-setwebproxy", svc, p.host, p.port, "on", p.user, p.pass)
+			_ = runNetworkSetup(ctx, "-setsecurewebproxy", svc, p.host, p.port, "on", p.user, p.pass)
+			_ = runNetworkSetup(ctx, "-setsocksfirewallproxy", svc, p.host, p.port, "on", p.user, p.pass)
 		} else {
-			_ = runNetworkSetup("-setwebproxy", svc, p.host, p.port)
-			_ = runNetworkSetup("-setsecurewebproxy", svc, p.host, p.port)
-			_ = runNetworkSetup("-setsocksfirewallproxy", svc, p.host, p.port)
+			_ = runNetworkSetup(ctx, "-setwebproxy", svc, p.host, p.port)
+			_ = runNetworkSetup(ctx, "-setsecurewebproxy", svc, p.host, p.port)
+			_ = runNetworkSetup(ctx, "-setsocksfirewallproxy", svc, p.host, p.port)
 		}
-		_ = runNetworkSetup("-setwebproxystate", svc, "on")
-		_ = runNetworkSetup("-setsecurewebproxystate", svc, "on")
-		_ = runNetworkSetup("-setsocksfirewallproxystate", svc, "on")
+		_ = runNetworkSetup(ctx, "-setwebproxystate", svc, "on")
+		_ = runNetworkSetup(ctx, "-setsecurewebproxystate", svc, "on")
+		_ = runNetworkSetup(ctx, "-setsocksfirewallproxystate", svc, "on")
 	}
 	return nil
 }
 
-func unsetGlobal() error {
-	services, err := macOSNetworkServices()
+func unsetGlobal(ctx context.Context) error {
+	services, err := macOSNetworkServices(ctx)
 	if err != nil {
 		return err
 	}
 	for _, svc := range services {
-		_ = runNetworkSetup("-setwebproxystate", svc, "off")
-		_ = runNetworkSetup("-setsecurewebproxystate", svc, "off")
-		_ = runNetworkSetup("-setsocksfirewallproxystate", svc, "off")
+		_ = runNetworkSetup(ctx, "-setwebproxystate", svc, "off")
+		_ = runNetworkSetup(ctx, "-setsecurewebproxystate", svc, "off")
+		_ = runNetworkSetup(ctx, "-setsocksfirewallproxystate", svc, "off")
 	}
 	return nil
 }
 
-func getGlobal() (string, error) {
-	services, err := macOSNetworkServices()
+func getGlobal(ctx context.Context) (string, error) {
+	services, err := macOSNetworkServices(ctx)
 	if err != nil || len(services) == 0 {
 		return "", fmt.Errorf("sysproxy: no network services found")
 	}
-	out, err := exec.Command("networksetup", "-getwebproxy", services[0]).Output() //nolint:noctx,gosec
+	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-getwebproxy", services[0]).Output() //nolint:gosec
 	if err != nil {
 		return "", err
 	}
@@ -74,45 +75,45 @@ func getGlobal() (string, error) {
 	return "", fmt.Errorf("sysproxy: proxy not set")
 }
 
-func setGlobalPAC(pacURL string) error {
-	services, err := macOSNetworkServices()
+func setGlobalPAC(ctx context.Context, pacURL string) error {
+	services, err := macOSNetworkServices(ctx)
 	if err != nil {
 		return err
 	}
 	for _, svc := range services {
-		_ = runNetworkSetup("-setautoproxyurl", svc, pacURL)
-		_ = runNetworkSetup("-setautoproxystate", svc, "on")
+		_ = runNetworkSetup(ctx, "-setautoproxyurl", svc, pacURL)
+		_ = runNetworkSetup(ctx, "-setautoproxystate", svc, "on")
 	}
 	return nil
 }
 
-func setGlobalMulti(cfg ProxyConfig) error {
-	services, err := macOSNetworkServices()
+func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
+	services, err := macOSNetworkServices(ctx)
 	if err != nil {
 		return err
 	}
 	for _, svc := range services {
 		if cfg.HTTP != "" {
-			_ = runNetworkSetup("-setwebproxy", svc, hostFromURL(cfg.HTTP), portFromURL(cfg.HTTP))
-			_ = runNetworkSetup("-setwebproxystate", svc, "on")
+			_ = runNetworkSetup(ctx, "-setwebproxy", svc, hostFromURL(cfg.HTTP), portFromURL(cfg.HTTP))
+			_ = runNetworkSetup(ctx, "-setwebproxystate", svc, "on")
 		}
 		if cfg.HTTPS != "" {
-			_ = runNetworkSetup("-setsecurewebproxy", svc, hostFromURL(cfg.HTTPS), portFromURL(cfg.HTTPS))
-			_ = runNetworkSetup("-setsecurewebproxystate", svc, "on")
+			_ = runNetworkSetup(ctx, "-setsecurewebproxy", svc, hostFromURL(cfg.HTTPS), portFromURL(cfg.HTTPS))
+			_ = runNetworkSetup(ctx, "-setsecurewebproxystate", svc, "on")
 		}
 		if cfg.SOCKS != "" {
-			_ = runNetworkSetup("-setsocksfirewallproxy", svc, hostFromURL(cfg.SOCKS), portFromURL(cfg.SOCKS))
-			_ = runNetworkSetup("-setsocksfirewallproxystate", svc, "on")
+			_ = runNetworkSetup(ctx, "-setsocksfirewallproxy", svc, hostFromURL(cfg.SOCKS), portFromURL(cfg.SOCKS))
+			_ = runNetworkSetup(ctx, "-setsocksfirewallproxystate", svc, "on")
 		}
 		if cfg.NoProxy != "" {
-			_ = runNetworkSetup("-setproxybypassdomains", svc, cfg.NoProxy)
+			_ = runNetworkSetup(ctx, "-setproxybypassdomains", svc, cfg.NoProxy)
 		}
 	}
 	return nil
 }
 
-func macOSNetworkServices() ([]string, error) {
-	out, err := exec.Command("networksetup", "-listallnetworkservices").Output() //nolint:noctx
+func macOSNetworkServices(ctx context.Context) ([]string, error) {
+	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-listallnetworkservices").Output()
 	if err != nil {
 		return nil, fmt.Errorf("sysproxy: networksetup: %w", err)
 	}

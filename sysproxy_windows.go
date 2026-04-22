@@ -3,6 +3,7 @@
 package sysproxy
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -12,43 +13,43 @@ import (
 
 const regKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 
-func runReg(args ...string) error {
-	return exec.Command("reg", args...).Run() //nolint:noctx
+func runReg(ctx context.Context, args ...string) error {
+	return exec.CommandContext(normalizeContext(ctx), "reg", args...).Run()
 }
 
-func runCmdkey(args ...string) error {
-	return exec.Command("cmdkey", args...).Run() //nolint:noctx
+func runCmdkey(ctx context.Context, args ...string) error {
+	return exec.CommandContext(normalizeContext(ctx), "cmdkey", args...).Run()
 }
 
-func runRundll32(args ...string) error {
-	return exec.Command("rundll32.exe", args...).Run() //nolint:noctx
+func runRundll32(ctx context.Context, args ...string) error {
+	return exec.CommandContext(normalizeContext(ctx), "rundll32.exe", args...).Run()
 }
 
-func setGlobal(p *proxy) error {
-	_ = runReg("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
-	_ = runReg("add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", p.host+":"+p.port, "/f")
-	_ = runReg("add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", "localhost;127.0.0.1;::1", "/f")
+func setGlobal(ctx context.Context, p *proxy) error {
+	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
+	_ = runReg(ctx, "add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", p.host+":"+p.port, "/f")
+	_ = runReg(ctx, "add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", "localhost;127.0.0.1;::1", "/f")
 	if p.user != "" {
-		_ = runCmdkey("/add:"+p.host, "/user:"+p.user, "/pass:"+p.pass)
+		_ = runCmdkey(ctx, "/add:"+p.host, "/user:"+p.user, "/pass:"+p.pass)
 	}
-	_ = runRundll32("wininet.dll,InternetSetOptionEx")
+	_ = runRundll32(ctx, "wininet.dll,InternetSetOptionEx")
 	return nil
 }
 
-func unsetGlobal() error {
-	_ = runReg("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f")
-	_ = runReg("delete", regKey, "/v", "ProxyServer", "/f")
-	_ = runReg("delete", regKey, "/v", "ProxyOverride", "/f")
-	if host, err := currentProxyHost(); err == nil && host != "" {
-		_ = runCmdkey("/delete:" + host)
+func unsetGlobal(ctx context.Context) error {
+	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f")
+	_ = runReg(ctx, "delete", regKey, "/v", "ProxyServer", "/f")
+	_ = runReg(ctx, "delete", regKey, "/v", "ProxyOverride", "/f")
+	if host, err := currentProxyHost(ctx); err == nil && host != "" {
+		_ = runCmdkey(ctx, "/delete:"+host)
 	}
 	return nil
 }
 
 // currentProxyHost reads the proxy host from the registry so Unset can clean
 // up Credential Manager without requiring the caller to pass the original URL.
-func currentProxyHost() (string, error) {
-	out, err := exec.Command("reg", "query", regKey, "/v", "ProxyServer").Output() //nolint:noctx
+func currentProxyHost(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
 		return "", err
 	}
@@ -67,12 +68,12 @@ func currentProxyHost() (string, error) {
 	return "", fmt.Errorf("sysproxy: ProxyServer not found in registry")
 }
 
-func getGlobal() (string, error) {
-	out, err := exec.Command("reg", "query", regKey, "/v", "ProxyEnable").Output() //nolint:noctx
+func getGlobal(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyEnable").Output()
 	if err != nil || !strings.Contains(string(out), "0x1") {
 		return "", fmt.Errorf("sysproxy: proxy not enabled")
 	}
-	out, err = exec.Command("reg", "query", regKey, "/v", "ProxyServer").Output() //nolint:noctx
+	out, err = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
 		return "", fmt.Errorf("sysproxy: cannot read ProxyServer")
 	}
@@ -87,14 +88,14 @@ func getGlobal() (string, error) {
 	return "", fmt.Errorf("sysproxy: proxy not set")
 }
 
-func setGlobalPAC(pacURL string) error {
-	_ = runReg("add", regKey, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", pacURL, "/f")
-	_ = runReg("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f")
+func setGlobalPAC(ctx context.Context, pacURL string) error {
+	_ = runReg(ctx, "add", regKey, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", pacURL, "/f")
+	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f")
 	return nil
 }
 
-func setGlobalMulti(cfg ProxyConfig) error {
-	_ = runReg("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
+func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
+	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
 	var servers []string
 	if cfg.HTTP != "" {
 		servers = append(servers, "http="+hostPortFromURL(cfg.HTTP))
@@ -106,10 +107,10 @@ func setGlobalMulti(cfg ProxyConfig) error {
 		servers = append(servers, "socks="+hostPortFromURL(cfg.SOCKS))
 	}
 	if len(servers) > 0 {
-		_ = runReg("add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", strings.Join(servers, ";"), "/f")
+		_ = runReg(ctx, "add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", strings.Join(servers, ";"), "/f")
 	}
 	if cfg.NoProxy != "" {
-		_ = runReg("add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", cfg.NoProxy, "/f")
+		_ = runReg(ctx, "add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", cfg.NoProxy, "/f")
 	}
 	return nil
 }
