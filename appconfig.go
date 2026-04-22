@@ -2,6 +2,7 @@ package sysproxy
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,7 +27,17 @@ const (
 //
 //	err := sysproxy.WriteAppConfig(sysproxy.AppGit, "http://proxy.example.com:8080")
 func WriteAppConfig(app AppName, proxyURL string) error {
+	return WriteAppConfigContext(context.Background(), app, proxyURL)
+}
+
+// WriteAppConfigContext writes proxy settings to the tool-specific config for
+// app. It aborts before side effects if ctx is already canceled.
+func WriteAppConfigContext(ctx context.Context, app AppName, proxyURL string) error {
 	if err := validateProxyURL(proxyURL); err != nil {
+		return err
+	}
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	var err error
@@ -34,9 +45,9 @@ func WriteAppConfig(app AppName, proxyURL string) error {
 	case AppCurl:
 		err = writeCurlRC(proxyURL)
 	case AppGit:
-		err = writeGitProxy(proxyURL)
+		err = writeGitProxy(ctx, proxyURL)
 	case AppNPM:
-		err = writeNPMProxy(proxyURL)
+		err = writeNPMProxy(ctx, proxyURL)
 	case AppPip:
 		err = writePipConf(proxyURL)
 	case AppWget:
@@ -50,14 +61,24 @@ func WriteAppConfig(app AppName, proxyURL string) error {
 
 // ClearAppConfig removes proxy settings from the tool-specific config for app.
 func ClearAppConfig(app AppName) error {
+	return ClearAppConfigContext(context.Background(), app)
+}
+
+// ClearAppConfigContext removes proxy settings from the tool-specific config
+// for app. It aborts before side effects if ctx is already canceled.
+func ClearAppConfigContext(ctx context.Context, app AppName) error {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var err error
 	switch app {
 	case AppCurl:
 		err = clearCurlRC()
 	case AppGit:
-		err = clearGitProxy()
+		err = clearGitProxy(ctx)
 	case AppNPM:
-		err = clearNPMProxy()
+		err = clearNPMProxy(ctx)
 	case AppPip:
 		err = clearPipConf()
 	case AppWget:
@@ -89,57 +110,57 @@ func clearCurlRC() error {
 
 // ── git (git config --global) ─────────────────────────────────────────────────
 
-func runGit(args ...string) error {
-	return exec.Command("git", args...).Run() //nolint:noctx,gosec
+func runGit(ctx context.Context, args ...string) error {
+	return exec.CommandContext(normalizeContext(ctx), "git", args...).Run() //nolint:gosec
 }
 
-func writeGitProxy(proxyURL string) error {
+func writeGitProxy(ctx context.Context, proxyURL string) error {
 	if !isAvailable("git") {
 		return fmt.Errorf("sysproxy: git not found in PATH")
 	}
-	if err := runGit("config", "--global", "http.proxy", proxyURL); err != nil {
+	if err := runGit(ctx, "config", "--global", "http.proxy", proxyURL); err != nil {
 		return fmt.Errorf("sysproxy: git config http.proxy: %w", err)
 	}
-	if err := runGit("config", "--global", "https.proxy", proxyURL); err != nil {
+	if err := runGit(ctx, "config", "--global", "https.proxy", proxyURL); err != nil {
 		return fmt.Errorf("sysproxy: git config https.proxy: %w", err)
 	}
 	return nil
 }
 
-func clearGitProxy() error {
+func clearGitProxy(ctx context.Context) error {
 	if !isAvailable("git") {
 		return fmt.Errorf("sysproxy: git not found in PATH")
 	}
-	_ = runGit("config", "--global", "--unset", "http.proxy")
-	_ = runGit("config", "--global", "--unset", "https.proxy")
+	_ = runGit(ctx, "config", "--global", "--unset", "http.proxy")
+	_ = runGit(ctx, "config", "--global", "--unset", "https.proxy")
 	return nil
 }
 
 // ── npm (npm config set) ──────────────────────────────────────────────────────
 
-func runNPM(args ...string) error {
-	return exec.Command("npm", args...).Run() //nolint:noctx,gosec
+func runNPM(ctx context.Context, args ...string) error {
+	return exec.CommandContext(normalizeContext(ctx), "npm", args...).Run() //nolint:gosec
 }
 
-func writeNPMProxy(proxyURL string) error {
+func writeNPMProxy(ctx context.Context, proxyURL string) error {
 	if !isAvailable("npm") {
 		return fmt.Errorf("sysproxy: npm not found in PATH")
 	}
-	if err := runNPM("config", "set", "proxy", proxyURL); err != nil {
+	if err := runNPM(ctx, "config", "set", "proxy", proxyURL); err != nil {
 		return fmt.Errorf("sysproxy: npm config set proxy: %w", err)
 	}
-	if err := runNPM("config", "set", "https-proxy", proxyURL); err != nil {
+	if err := runNPM(ctx, "config", "set", "https-proxy", proxyURL); err != nil {
 		return fmt.Errorf("sysproxy: npm config set https-proxy: %w", err)
 	}
 	return nil
 }
 
-func clearNPMProxy() error {
+func clearNPMProxy(ctx context.Context) error {
 	if !isAvailable("npm") {
 		return fmt.Errorf("sysproxy: npm not found in PATH")
 	}
-	_ = runNPM("config", "delete", "proxy")
-	_ = runNPM("config", "delete", "https-proxy")
+	_ = runNPM(ctx, "config", "delete", "proxy")
+	_ = runNPM(ctx, "config", "delete", "https-proxy")
 	return nil
 }
 

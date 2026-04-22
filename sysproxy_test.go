@@ -2,6 +2,7 @@ package sysproxy
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -193,15 +194,29 @@ func TestSetLogger(t *testing.T) {
 
 // ── WriteAppConfig / ClearAppConfig ──────────────────────────────────────────
 
-func TestWriteAppConfigCurl(t *testing.T) {
+func setTestHome(t *testing.T) string {
+	t.Helper()
+
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	if volume := filepath.VolumeName(home); volume != "" {
+		t.Setenv("HOMEDRIVE", volume)
+		t.Setenv("HOMEPATH", strings.TrimPrefix(home, volume))
+	}
+
+	return home
+}
+
+func TestWriteAppConfigCurl(t *testing.T) {
+	home := setTestHome(t)
 
 	if err := WriteAppConfig(AppCurl, "http://proxy.example.com:8080"); err != nil {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(home + "/.curlrc") //nolint:gosec
+	data, err := os.ReadFile(filepath.Join(home, ".curlrc")) //nolint:gosec
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,29 +226,27 @@ func TestWriteAppConfigCurl(t *testing.T) {
 }
 
 func TestClearAppConfigCurl(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := setTestHome(t)
 
 	_ = WriteAppConfig(AppCurl, "http://proxy.example.com:8080")
 	if err := ClearAppConfig(AppCurl); err != nil {
 		t.Fatal(err)
 	}
 
-	data, _ := os.ReadFile(home + "/.curlrc") //nolint:gosec
+	data, _ := os.ReadFile(filepath.Join(home, ".curlrc")) //nolint:gosec
 	if strings.Contains(string(data), "proxy") {
 		t.Errorf("proxy should be removed, got: %s", data)
 	}
 }
 
 func TestWriteAppConfigPip(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := setTestHome(t)
 
 	if err := WriteAppConfig(AppPip, "http://proxy.example.com:8080"); err != nil {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(home + "/.config/pip/pip.conf") //nolint:gosec
+	data, err := os.ReadFile(filepath.Join(home, ".config", "pip", "pip.conf")) //nolint:gosec
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,14 +256,13 @@ func TestWriteAppConfigPip(t *testing.T) {
 }
 
 func TestWriteAppConfigWget(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := setTestHome(t)
 
 	if err := WriteAppConfig(AppWget, "http://proxy.example.com:8080"); err != nil {
 		t.Fatal(err)
 	}
 
-	data, _ := os.ReadFile(home + "/.wgetrc") //nolint:gosec
+	data, _ := os.ReadFile(filepath.Join(home, ".wgetrc")) //nolint:gosec
 	if !strings.Contains(string(data), "http_proxy = http://proxy.example.com:8080") {
 		t.Errorf("unexpected .wgetrc content: %s", data)
 	}

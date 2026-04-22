@@ -7,15 +7,20 @@
 Cross-platform system proxy management for Go — set, clear, and query the OS proxy from your application without shell scripts.
 
 ```go
-sysproxy.Set("socks5://user:pass@proxy.example.com:1080", sysproxy.ScopeGlobal)
-sysproxy.Unset(sysproxy.ScopeGlobal)
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+if err := sysproxy.SetContext(ctx, "socks5://user:pass@proxy.example.com:1080", sysproxy.ScopeGlobal); err != nil {
+    log.Fatal(err)
+}
+defer sysproxy.UnsetContext(ctx, sysproxy.ScopeGlobal)
 ```
 
 ## Why
 
 Proxy-switching tools, VPN clients, and network-aware CLIs built in Go often need to set the OS system proxy — not just read it. The existing options are either buried inside a large SDK ([outline-sdk/x/sysproxy](https://pkg.go.dev/github.com/Jigsaw-Code/outline-sdk/x/sysproxy)), Windows-only, or rely on shipping pre-built binaries.
 
-`go-sysproxy` is a focused, standalone package: macOS (`networksetup`), Linux (GNOME + KDE + `/etc/environment`), and Windows (registry + Credential Manager), with health checking, per-app config, and temporary proxy restore — zero external dependencies.
+`go-sysproxy` is a focused package for macOS (`networksetup`), Linux (GNOME + KDE + `/etc/environment`), and Windows (registry + Credential Manager). It covers system proxy changes, health checks, per-app config, and temporary proxy restore without external dependencies.
 
 ## Installation
 
@@ -39,18 +44,19 @@ import (
 )
 
 func main() {
-    // Verify the proxy is reachable before committing
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
     defer cancel()
+
+    // Verify the proxy is reachable before committing
     if err := sysproxy.Check(ctx, "http://proxy.example.com:8080"); err != nil {
         log.Fatal(err)
     }
 
-    // Set system proxy globally
-    if err := sysproxy.Set("http://proxy.example.com:8080", sysproxy.ScopeGlobal); err != nil {
+    // Apply the system proxy and restore it on exit
+    if err := sysproxy.SetContext(ctx, "http://proxy.example.com:8080", sysproxy.ScopeGlobal); err != nil {
         log.Fatal(err)
     }
-    defer sysproxy.Unset(sysproxy.ScopeGlobal)
+    defer sysproxy.UnsetContext(ctx, sysproxy.ScopeGlobal)
 }
 ```
 
@@ -73,6 +79,18 @@ err  = sysproxy.Unset(sysproxy.ScopeGlobal)
 url, err := sysproxy.Get() // reads current system proxy
 ```
 
+The plain wrappers stay available for backward compatibility. If you want cancellation and deadlines, use the context-aware variants:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+err := sysproxy.SetContext(ctx, "http://user:pass@proxy.example.com:8080", sysproxy.ScopeGlobal)
+err  = sysproxy.UnsetContext(ctx, sysproxy.ScopeGlobal)
+
+url, err := sysproxy.GetContext(ctx)
+```
+
 ### Per-protocol proxy
 
 ```go
@@ -84,11 +102,15 @@ err := sysproxy.SetMulti(sysproxy.ProxyConfig{
 }, sysproxy.ScopeGlobal)
 ```
 
+`SetMultiContext` is also available when you want the same API with cancellation support.
+
 ### PAC file
 
 ```go
 err := sysproxy.SetPAC("https://config.example.com/proxy.pac", sysproxy.ScopeGlobal)
 ```
+
+`SetPACContext` is also available for deadline-aware callers.
 
 ### Temporary proxy
 
@@ -130,6 +152,8 @@ sysproxy.WriteAppConfig(sysproxy.AppWget, "http://proxy.example.com:8080") // ~/
 sysproxy.ClearAppConfig(sysproxy.AppGit)
 ```
 
+`WriteAppConfigContext` and `ClearAppConfigContext` are available for `git` and `npm`, where configuration is applied through external commands.
+
 ### Logging / auditing
 
 ```go
@@ -163,6 +187,12 @@ _ = sysproxy.WriteAppConfig(sysproxy.AppCurl, "http://username:password@proxy.pr
 ```
 
 > Credentials in proxy URLs are handled by the OS — on Windows they are stored in Credential Manager, not written to disk in plaintext.
+
+## Notes
+
+- `Check` verifies TCP reachability of the proxy endpoint. It does not validate credentials or perform a protocol-level handshake.
+- Context-aware APIs abort before starting side effects when the context is already canceled, and command-backed operations use `exec.CommandContext`.
+- `ScopeGlobal` may still require elevated permissions depending on the platform and the target settings store.
 
 ## Platform support
 
