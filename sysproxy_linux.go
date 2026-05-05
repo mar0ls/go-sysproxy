@@ -119,7 +119,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 		}
 	}
 
-	raw, _ := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy", "ignore-hosts").Output() //nolint:gosec
+	raw, _ := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy", "ignore-hosts").Output()
 	cfg.NoProxy = parseGsettingsArray(string(raw))
 
 	if cfg.HTTP == "" && cfg.HTTPS == "" && cfg.SOCKS == "" {
