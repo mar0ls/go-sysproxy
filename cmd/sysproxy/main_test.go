@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,9 @@ import (
 func testBinary(t *testing.T) string {
 	t.Helper()
 	bin := t.TempDir() + "/sysproxy"
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	cmd := exec.Command("go", "build", "-o", bin, ".") //nolint:gosec
 	cmd.Dir = "."
 	if out, err := cmd.CombinedOutput(); err != nil {
