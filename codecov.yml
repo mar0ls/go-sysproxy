@@ -6,5 +6,5 @@ coverage:
         threshold: 2%
 
 ignore:
-  - "cmd/"
-  - "internal/"
+  - "cmd/**"
+  - "internal/**"
