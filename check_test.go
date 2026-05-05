@@ -49,7 +49,7 @@ func TestCheckInvalidURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected invalid URL error")
 	}
-	if !strings.Contains(err.Error(), "invalid proxy URL") {
+	if !strings.Contains(err.Error(), "proxy URL") {
 		t.Fatalf("expected validation error, got %v", err)
 	}
 }

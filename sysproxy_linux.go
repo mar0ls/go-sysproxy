@@ -73,6 +73,61 @@ func getGlobal(ctx context.Context) (string, error) {
 	return "http://" + h + ":" + p, nil
 }
 
+// gsettingsField reads a single string field from a gsettings schema.
+func gsettingsField(ctx context.Context, schema, key string) string {
+	out, err := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", schema, key).Output() //nolint:gosec
+	if err != nil {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(string(out)), "'")
+}
+
+// parseGsettingsArray converts a GLib array string like ['a', 'b'] to "a,b".
+func parseGsettingsArray(raw string) string {
+	s := strings.Trim(strings.TrimSpace(raw), "[]")
+	var parts []string
+	for _, item := range strings.Split(s, ",") {
+		if v := strings.Trim(strings.TrimSpace(item), "'"); v != "" {
+			parts = append(parts, v)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
+	if !isAvailable("gsettings") {
+		return ProxyConfig{}, fmt.Errorf("sysproxy: gsettings not available")
+	}
+	if gsettingsField(ctx, "org.gnome.system.proxy", "mode") != "manual" {
+		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not set")
+	}
+
+	var cfg ProxyConfig
+	for _, q := range []struct {
+		schema string
+		scheme string
+		dest   *string
+	}{
+		{"org.gnome.system.proxy.http", "http", &cfg.HTTP},
+		{"org.gnome.system.proxy.https", "http", &cfg.HTTPS},
+		{"org.gnome.system.proxy.socks", "socks5", &cfg.SOCKS},
+	} {
+		h := gsettingsField(ctx, q.schema, "host")
+		p := gsettingsField(ctx, q.schema, "port")
+		if h != "" && p != "0" {
+			*q.dest = q.scheme + "://" + h + ":" + p
+		}
+	}
+
+	raw, _ := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy", "ignore-hosts").Output() //nolint:gosec
+	cfg.NoProxy = parseGsettingsArray(string(raw))
+
+	if cfg.HTTP == "" && cfg.HTTPS == "" && cfg.SOCKS == "" {
+		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not set")
+	}
+	return cfg, nil
+}
+
 func setGlobalPAC(ctx context.Context, pacURL string) error {
 	switch detectDesktopEnv() {
 	case "gnome":
@@ -126,6 +181,22 @@ func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 	}
 	return nil
 }
+
+// linuxBackend implements globalBackend using gsettings/kwriteconfig5 and /etc/environment.
+type linuxBackend struct{}
+
+func (linuxBackend) SetGlobal(ctx context.Context, p *proxy) error { return setGlobal(ctx, p) }
+func (linuxBackend) UnsetGlobal(ctx context.Context) error         { return unsetGlobal(ctx) }
+func (linuxBackend) GetGlobal(ctx context.Context) (string, error) { return getGlobal(ctx) }
+func (linuxBackend) GetGlobalConfig(ctx context.Context) (ProxyConfig, error) {
+	return getGlobalConfig(ctx)
+}
+func (linuxBackend) SetGlobalPAC(ctx context.Context, u string) error { return setGlobalPAC(ctx, u) }
+func (linuxBackend) SetGlobalMulti(ctx context.Context, c ProxyConfig) error {
+	return setGlobalMulti(ctx, c)
+}
+
+func init() { activeBackend = linuxBackend{} }
 
 func detectDesktopEnv() string {
 	for _, env := range []string{"XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "GDMSESSION"} {

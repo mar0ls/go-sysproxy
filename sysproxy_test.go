@@ -1,6 +1,9 @@
 package sysproxy
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,9 +13,30 @@ import (
 // ── Get ───────────────────────────────────────────────────────────────────────
 
 func TestGet_NotSet(t *testing.T) {
-	proxy, err := Get()
-	if err == nil && proxy != "" {
-		t.Error("expected error or empty proxy when not set")
+	useMockBackend(t, &mockBackend{
+		getGlobalFn: func(_ context.Context) (string, error) {
+			return "", fmt.Errorf("sysproxy: proxy not set")
+		},
+	})
+	_, err := Get()
+	if err == nil {
+		t.Error("expected error when proxy not set")
+	}
+}
+
+func TestGet_Set(t *testing.T) {
+	const want = "http://proxy.example.com:8080"
+	useMockBackend(t, &mockBackend{
+		getGlobalFn: func(_ context.Context) (string, error) {
+			return want, nil
+		},
+	})
+	got, err := Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("Get() = %q, want %q", got, want)
 	}
 }
 
@@ -81,23 +105,29 @@ func TestParseSocks5(t *testing.T) {
 
 func TestValidateProxyURL(t *testing.T) {
 	cases := []struct {
-		url  string
-		want bool // true = valid
+		url         string
+		want        bool   // true = valid
+		wantErrFrag string // non-empty: substring expected in error message
 	}{
-		{"http://proxy.example.com:8080", true},
-		{"https://proxy.example.com:8080", true},
-		{"socks5://proxy.example.com:1080", true},
-		{"http://user:pass@proxy.example.com:8080", true},
-		{"http://localhost:8080", true}, // localhost allowed — library should not restrict this
-		{"://bad url", false},
-		{"http://proxy.example.com:99999", false},
-		{"http://proxy.example.com:0", false},
-		{"", false},
+		{"http://proxy.example.com:8080", true, ""},
+		{"https://proxy.example.com:8080", true, ""},
+		{"socks5://proxy.example.com:1080", true, ""},
+		{"http://user:pass@proxy.example.com:8080", true, ""},
+		{"http://localhost:8080", true, ""},
+		{"://bad url", false, "scheme"},
+		{"http://", false, "missing host"},
+		{"http://proxy.example.com:99999", false, "out of range"},
+		{"http://proxy.example.com:0", false, "out of range"},
+		{"", false, "missing scheme"},
 	}
 	for _, c := range cases {
 		err := validateProxyURL(c.url)
 		if (err == nil) != c.want {
 			t.Errorf("validateProxyURL(%q): got err=%v, want valid=%v", c.url, err, c.want)
+			continue
+		}
+		if !c.want && c.wantErrFrag != "" && !strings.Contains(err.Error(), c.wantErrFrag) {
+			t.Errorf("validateProxyURL(%q): error = %q, want to contain %q", c.url, err.Error(), c.wantErrFrag)
 		}
 	}
 }
@@ -271,5 +301,303 @@ func TestWriteAppConfigWget(t *testing.T) {
 func TestWriteAppConfigUnsupported(t *testing.T) {
 	if err := WriteAppConfig("burp", "http://proxy.example.com:8080"); err == nil {
 		t.Error("expected error for unsupported app")
+	}
+}
+
+// ── ScopeGlobal via mock backend ──────────────────────────────────────────────
+
+func TestSetGlobal_CallsBackend(t *testing.T) {
+	var called bool
+	useMockBackend(t, &mockBackend{
+		setGlobalFn: func(_ context.Context, p *proxy) error {
+			called = true
+			if p.host != "proxy.example.com" || p.port != "8080" {
+				t.Errorf("unexpected proxy: host=%q port=%q", p.host, p.port)
+			}
+			return nil
+		},
+	})
+	t.Cleanup(unsetEnvVars)
+
+	if err := Set("http://proxy.example.com:8080", ScopeGlobal); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Error("backend.SetGlobal was not called")
+	}
+}
+
+func TestSetGlobal_BackendError(t *testing.T) {
+	useMockBackend(t, &mockBackend{
+		setGlobalFn: func(_ context.Context, _ *proxy) error {
+			return errors.New("backend error")
+		},
+	})
+	t.Cleanup(unsetEnvVars)
+
+	if err := Set("http://proxy.example.com:8080", ScopeGlobal); err == nil {
+		t.Error("expected error from backend")
+	}
+}
+
+func TestUnsetGlobal_CallsBackend(t *testing.T) {
+	var called bool
+	useMockBackend(t, &mockBackend{
+		unsetGlobalFn: func(_ context.Context) error {
+			called = true
+			return nil
+		},
+	})
+	t.Cleanup(unsetEnvVars)
+
+	if err := Unset(ScopeGlobal); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Error("backend.UnsetGlobal was not called")
+	}
+}
+
+func TestGetContext_PropagatesURL(t *testing.T) {
+	const want = "http://proxy.example.com:9090"
+	useMockBackend(t, &mockBackend{
+		getGlobalFn: func(_ context.Context) (string, error) { return want, nil },
+	})
+
+	got, err := Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("Get() = %q, want %q", got, want)
+	}
+}
+
+func TestSetMultiGlobal_CallsBackend(t *testing.T) {
+	var got ProxyConfig
+	useMockBackend(t, &mockBackend{
+		setGlobalMultiFn: func(_ context.Context, cfg ProxyConfig) error {
+			got = cfg
+			return nil
+		},
+	})
+	t.Cleanup(unsetEnvVars)
+
+	want := ProxyConfig{
+		HTTP:  "http://http.example.com:8080",
+		HTTPS: "http://https.example.com:8080",
+	}
+	if err := SetMulti(want, ScopeGlobal); err != nil {
+		t.Fatal(err)
+	}
+	if got.HTTP != want.HTTP || got.HTTPS != want.HTTPS {
+		t.Errorf("SetMulti passed %+v, want %+v", got, want)
+	}
+}
+
+func TestSetPACGlobal_CallsBackend(t *testing.T) {
+	const pacURL = "http://config.example.com/proxy.pac"
+	var called bool
+	useMockBackend(t, &mockBackend{
+		setGlobalPACFn: func(_ context.Context, u string) error {
+			called = true
+			if u != pacURL {
+				t.Errorf("SetGlobalPAC got %q, want %q", u, pacURL)
+			}
+			return nil
+		},
+	})
+	t.Cleanup(unsetEnvVars)
+
+	if err := SetPAC(pacURL, ScopeGlobal); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Error("backend.SetGlobalPAC was not called")
+	}
+}
+
+func TestWithProxy_RestoresPrevious(t *testing.T) {
+	const prev = "http://prev.example.com:8080"
+	const next = "http://next.example.com:9090"
+
+	setLog := []string{}
+	useMockBackend(t, &mockBackend{
+		setGlobalFn: func(_ context.Context, p *proxy) error {
+			setLog = append(setLog, p.rawURL)
+			return nil
+		},
+		unsetGlobalFn: func(_ context.Context) error { return nil },
+		getGlobalFn:   func(_ context.Context) (string, error) { return prev, nil },
+	})
+	t.Cleanup(unsetEnvVars)
+
+	err := WithProxy(context.Background(), next, ScopeGlobal, func(_ context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(setLog) < 2 {
+		t.Fatalf("expected at least 2 Set calls, got %d", len(setLog))
+	}
+	// last Set call should restore the previous proxy
+	if setLog[len(setLog)-1] != prev {
+		t.Errorf("last Set = %q, want %q", setLog[len(setLog)-1], prev)
+	}
+}
+
+// ── SetMultiContext / SetPACContext – ScopeShell ──────────────────────────────
+
+func TestSetMultiContext_ScopeShell(t *testing.T) {
+	t.Cleanup(unsetEnvVars)
+
+	cfg := ProxyConfig{HTTP: "http://proxy.example.com:8080", HTTPS: "http://proxy.example.com:8080"}
+	if err := SetMulti(cfg, ScopeShell); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("http_proxy"); got != cfg.HTTP {
+		t.Errorf("http_proxy = %q, want %q", got, cfg.HTTP)
+	}
+}
+
+func TestSetPACContext_ScopeShell(t *testing.T) {
+	t.Cleanup(func() { _ = os.Unsetenv("AUTOPROXY") })
+
+	if err := SetPAC("http://config.example.com/proxy.pac", ScopeShell); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("AUTOPROXY"); got != "http://config.example.com/proxy.pac" {
+		t.Errorf("AUTOPROXY = %q", got)
+	}
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+func TestHostFromURL(t *testing.T) {
+	cases := []struct{ url, want string }{
+		{"http://proxy.example.com:8080", "proxy.example.com"},
+		{"socks5://user:pass@proxy.example.com:1080", "proxy.example.com"},
+		{"://bad", ""},
+	}
+	for _, c := range cases {
+		if got := hostFromURL(c.url); got != c.want {
+			t.Errorf("hostFromURL(%q) = %q, want %q", c.url, got, c.want)
+		}
+	}
+}
+
+func TestPortFromURL(t *testing.T) {
+	cases := []struct{ url, want string }{
+		{"http://proxy.example.com:8080", "8080"},
+		{"socks5://proxy.example.com:1080", "1080"},
+		{"://bad", ""},
+	}
+	for _, c := range cases {
+		if got := portFromURL(c.url); got != c.want {
+			t.Errorf("portFromURL(%q) = %q, want %q", c.url, got, c.want)
+		}
+	}
+}
+
+// ── normalizeContext ──────────────────────────────────────────────────────────
+
+func TestNormalizeContext_Nil(t *testing.T) {
+	var nilCtx context.Context // typed nil, avoids SA1012 on literal nil
+	ctx := normalizeContext(nilCtx)
+	if ctx == nil {
+		t.Error("normalizeContext(nil) returned nil")
+	}
+}
+
+func TestNormalizeContext_NonNil(t *testing.T) {
+	orig := context.Background()
+	if got := normalizeContext(orig); got != orig {
+		t.Error("normalizeContext should return the same non-nil context")
+	}
+}
+
+// ── validatePACURL ────────────────────────────────────────────────────────────
+
+func TestValidatePACURL(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"http://config.example.com/proxy.pac", true},
+		{"https://config.example.com/proxy.pac", true},
+		{"file:///etc/proxy.pac", true},
+		{"ftp://bad.example.com/proxy.pac", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		err := validatePACURL(c.url)
+		if (err == nil) != c.want {
+			t.Errorf("validatePACURL(%q): got err=%v, want valid=%v", c.url, err, c.want)
+		}
+	}
+}
+
+// ── GetConfig via mock backend ────────────────────────────────────────────────
+
+func TestGetConfig_ReturnsFull(t *testing.T) {
+	want := ProxyConfig{
+		HTTP:    "http://http.example.com:8080",
+		HTTPS:   "http://https.example.com:8080",
+		SOCKS:   "socks5://socks.example.com:1080",
+		NoProxy: "localhost,10.0.0.0/8",
+	}
+	useMockBackend(t, &mockBackend{
+		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return want, nil },
+	})
+
+	got, err := GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("GetConfig() = %+v, want %+v", got, want)
+	}
+}
+
+func TestGetConfig_BackendError(t *testing.T) {
+	useMockBackend(t, &mockBackend{
+		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) {
+			return ProxyConfig{}, errors.New("proxy not set")
+		},
+	})
+
+	_, err := GetConfig()
+	if err == nil {
+		t.Error("expected error from backend")
+	}
+}
+
+func TestGetConfigContext_CanceledCtx(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := GetConfigContext(ctx)
+	if err == nil {
+		t.Error("expected context cancellation error")
+	}
+}
+
+// ── ProxyScope.String ─────────────────────────────────────────────────────────
+
+func TestProxyScopeString(t *testing.T) {
+	cases := []struct {
+		scope ProxyScope
+		want  string
+	}{
+		{ScopeShell, "shell"},
+		{ScopeUser, "user"},
+		{ScopeGlobal, "global"},
+		{ProxyScope(99), "unknown"},
+	}
+	for _, c := range cases {
+		if got := c.scope.String(); got != c.want {
+			t.Errorf("ProxyScope(%d).String() = %q, want %q", c.scope, got, c.want)
+		}
 	}
 }

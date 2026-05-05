@@ -22,7 +22,7 @@ var (
 )
 
 // SetLogger installs l as the global logger for all sysproxy operations.
-// Pass nil to disable logging (the default).
+// Pass nil to disable logging (the default). Safe for concurrent use.
 func SetLogger(l Logger) {
 	logMu.Lock()
 	globalLog = l

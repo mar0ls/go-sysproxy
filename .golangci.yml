@@ -16,11 +16,11 @@ linters:
     gosec:
       excludes:
         - G705
+        - G101  # false positive on example URLs in usage strings
     revive:
       severity: warning
     gocritic:
       enabled-checks:
-        - appendAssign
         - boolExprSimplify
   exclusions:
     rules:

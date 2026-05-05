@@ -32,6 +32,8 @@ func WriteAppConfig(app AppName, proxyURL string) error {
 
 // WriteAppConfigContext writes proxy settings to the tool-specific config for
 // app. It aborts before side effects if ctx is already canceled.
+// Context cancellation is honoured for AppGit and AppNPM (external commands);
+// for AppCurl, AppPip and AppWget it is checked once before writing.
 func WriteAppConfigContext(ctx context.Context, app AppName, proxyURL string) error {
 	if err := validateProxyURL(proxyURL); err != nil {
 		return err

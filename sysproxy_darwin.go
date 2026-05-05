@@ -48,18 +48,9 @@ func unsetGlobal(ctx context.Context) error {
 	return nil
 }
 
-func getGlobal(ctx context.Context) (string, error) {
-	services, err := macOSNetworkServices(ctx)
-	if err != nil || len(services) == 0 {
-		return "", fmt.Errorf("sysproxy: no network services found")
-	}
-	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-getwebproxy", services[0]).Output() //nolint:gosec
-	if err != nil {
-		return "", err
-	}
-	var host, port string
-	var enabled bool
-	for _, line := range strings.Split(string(out), "\n") {
+// parseNSProxyOutput extracts host, port and enabled state from networksetup output.
+func parseNSProxyOutput(output string) (host, port string, enabled bool) {
+	for _, line := range strings.Split(output, "\n") {
 		switch {
 		case strings.HasPrefix(line, "Enabled: Yes"):
 			enabled = true
@@ -69,10 +60,66 @@ func getGlobal(ctx context.Context) (string, error) {
 			port = strings.TrimSpace(strings.TrimPrefix(line, "Port:"))
 		}
 	}
-	if enabled && host != "" && port != "0" {
-		return "http://" + host + ":" + port, nil
+	return
+}
+
+func getGlobal(ctx context.Context) (string, error) {
+	services, err := macOSNetworkServices(ctx)
+	if err != nil || len(services) == 0 {
+		return "", fmt.Errorf("sysproxy: no network services found")
+	}
+	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-getwebproxy", services[0]).Output() //nolint:gosec
+	if err != nil {
+		return "", err
+	}
+	h, p, ok := parseNSProxyOutput(string(out))
+	if ok && h != "" && p != "0" {
+		return "http://" + h + ":" + p, nil
 	}
 	return "", fmt.Errorf("sysproxy: proxy not set")
+}
+
+func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
+	services, err := macOSNetworkServices(ctx)
+	if err != nil || len(services) == 0 {
+		return ProxyConfig{}, fmt.Errorf("sysproxy: no network services found")
+	}
+	svc := services[0]
+	ctx = normalizeContext(ctx)
+
+	var cfg ProxyConfig
+	for _, q := range []struct {
+		flag string
+		dest *string
+	}{
+		{"-getwebproxy", &cfg.HTTP},
+		{"-getsecurewebproxy", &cfg.HTTPS},
+		{"-getsocksfirewallproxy", &cfg.SOCKS},
+	} {
+		out, err := exec.CommandContext(ctx, "networksetup", q.flag, svc).Output() //nolint:gosec
+		if err == nil {
+			h, p, ok := parseNSProxyOutput(string(out))
+			if ok && h != "" && p != "0" {
+				*q.dest = "http://" + h + ":" + p
+			}
+		}
+	}
+
+	out, err := exec.CommandContext(ctx, "networksetup", "-getproxybypassdomains", svc).Output() //nolint:gosec
+	if err == nil {
+		var parts []string
+		for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				parts = append(parts, l)
+			}
+		}
+		cfg.NoProxy = strings.Join(parts, ",")
+	}
+
+	if cfg.HTTP == "" && cfg.HTTPS == "" && cfg.SOCKS == "" {
+		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not set")
+	}
+	return cfg, nil
 }
 
 func setGlobalPAC(ctx context.Context, pacURL string) error {
@@ -111,6 +158,22 @@ func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 	}
 	return nil
 }
+
+// darwinBackend implements globalBackend using macOS networksetup.
+type darwinBackend struct{}
+
+func (darwinBackend) SetGlobal(ctx context.Context, p *proxy) error { return setGlobal(ctx, p) }
+func (darwinBackend) UnsetGlobal(ctx context.Context) error         { return unsetGlobal(ctx) }
+func (darwinBackend) GetGlobal(ctx context.Context) (string, error) { return getGlobal(ctx) }
+func (darwinBackend) GetGlobalConfig(ctx context.Context) (ProxyConfig, error) {
+	return getGlobalConfig(ctx)
+}
+func (darwinBackend) SetGlobalPAC(ctx context.Context, u string) error { return setGlobalPAC(ctx, u) }
+func (darwinBackend) SetGlobalMulti(ctx context.Context, c ProxyConfig) error {
+	return setGlobalMulti(ctx, c)
+}
+
+func init() { activeBackend = darwinBackend{} }
 
 func macOSNetworkServices(ctx context.Context) ([]string, error) {
 	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-listallnetworkservices").Output()
