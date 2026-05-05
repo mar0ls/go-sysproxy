@@ -34,13 +34,19 @@ func parse(rawURL string) (*proxy, error) {
 
 func validateProxyURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme == "" || u.Hostname() == "" {
-		return fmt.Errorf("sysproxy: invalid proxy URL %q", rawURL)
+	if err != nil {
+		return fmt.Errorf("sysproxy: cannot parse proxy URL %q: %w", rawURL, err)
+	}
+	if u.Scheme == "" {
+		return fmt.Errorf("sysproxy: proxy URL %q missing scheme (e.g. http://host:port)", rawURL)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("sysproxy: proxy URL %q missing host", rawURL)
 	}
 	if port := u.Port(); port != "" {
 		var n int
 		if _, err := fmt.Sscanf(port, "%d", &n); err != nil || n < 1 || n > 65535 {
-			return fmt.Errorf("sysproxy: invalid port %q in proxy URL", port)
+			return fmt.Errorf("sysproxy: port %q out of range 1–65535 in proxy URL %q", port, rawURL)
 		}
 	}
 	return nil
@@ -50,7 +56,7 @@ func validatePACURL(pacURL string) error {
 	if !strings.HasPrefix(pacURL, "http://") &&
 		!strings.HasPrefix(pacURL, "https://") &&
 		!strings.HasPrefix(pacURL, "file://") {
-		return fmt.Errorf("sysproxy: PAC URL must start with http://, https://, or file://")
+		return fmt.Errorf("sysproxy: PAC URL must use http, https, or file scheme (got %q)", pacURL)
 	}
 	return nil
 }

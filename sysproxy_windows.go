@@ -115,6 +115,70 @@ func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 	return nil
 }
 
+// parseWindowsProxyServer converts a ProxyServer registry value to ProxyConfig.
+// The value is either "host:port" (single proxy for all protocols) or
+// "http=h:p;https=h:p;socks=h:p" (per-protocol).
+func parseWindowsProxyServer(server string) ProxyConfig {
+	var cfg ProxyConfig
+	if !strings.Contains(server, "=") {
+		cfg.HTTP = "http://" + server
+		cfg.HTTPS = "http://" + server
+		cfg.SOCKS = "socks5://" + server
+		return cfg
+	}
+	for _, part := range strings.Split(server, ";") {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		k, v := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		switch k {
+		case "http":
+			cfg.HTTP = "http://" + v
+		case "https":
+			cfg.HTTPS = "http://" + v
+		case "socks":
+			cfg.SOCKS = "socks5://" + v
+		}
+	}
+	return cfg
+}
+
+// extractRegValue returns the last whitespace-separated field on the line
+// containing key in reg.exe output.
+func extractRegValue(output, key string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, key) {
+			parts := strings.Fields(line)
+			if len(parts) > 0 {
+				return strings.TrimSpace(parts[len(parts)-1])
+			}
+		}
+	}
+	return ""
+}
+
+func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
+	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyEnable").Output()
+	if err != nil || !strings.Contains(string(out), "0x1") {
+		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not enabled")
+	}
+	out, err = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
+	if err != nil {
+		return ProxyConfig{}, fmt.Errorf("sysproxy: cannot read ProxyServer")
+	}
+	server := extractRegValue(string(out), "ProxyServer")
+	if server == "" {
+		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not set")
+	}
+	cfg := parseWindowsProxyServer(server)
+
+	out, _ = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyOverride").Output()
+	cfg.NoProxy = extractRegValue(string(out), "ProxyOverride")
+
+	return cfg, nil
+}
+
 func setUser(proxyURL string) error {
 	psProfile, err := powershellProfile()
 	if err != nil {
@@ -206,6 +270,22 @@ func setUserMulti(cfg ProxyConfig) error {
 	}
 	return nil
 }
+
+// windowsBackend implements globalBackend using the Windows registry and WinINET.
+type windowsBackend struct{}
+
+func (windowsBackend) SetGlobal(ctx context.Context, p *proxy) error { return setGlobal(ctx, p) }
+func (windowsBackend) UnsetGlobal(ctx context.Context) error         { return unsetGlobal(ctx) }
+func (windowsBackend) GetGlobal(ctx context.Context) (string, error) { return getGlobal(ctx) }
+func (windowsBackend) GetGlobalConfig(ctx context.Context) (ProxyConfig, error) {
+	return getGlobalConfig(ctx)
+}
+func (windowsBackend) SetGlobalPAC(ctx context.Context, u string) error { return setGlobalPAC(ctx, u) }
+func (windowsBackend) SetGlobalMulti(ctx context.Context, c ProxyConfig) error {
+	return setGlobalMulti(ctx, c)
+}
+
+func init() { activeBackend = windowsBackend{} }
 
 func hostPortFromURL(rawURL string) string {
 	u, err := url.Parse(rawURL)

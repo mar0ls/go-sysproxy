@@ -2,6 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/mar0ls/go-sysproxy.svg)](https://pkg.go.dev/github.com/mar0ls/go-sysproxy)
 [![CI](https://github.com/mar0ls/go-sysproxy/actions/workflows/test.yml/badge.svg)](https://github.com/mar0ls/go-sysproxy/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/mar0ls/go-sysproxy/graph/badge.svg)](https://codecov.io/gh/mar0ls/go-sysproxy)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mar0ls/go-sysproxy)](https://goreportcard.com/report/github.com/mar0ls/go-sysproxy)
 
 Cross-platform system proxy management for Go — set, clear, and query the OS proxy from your application without shell scripts.
@@ -20,7 +21,7 @@ defer sysproxy.UnsetContext(ctx, sysproxy.ScopeGlobal)
 
 Proxy-switching tools, VPN clients, and network-aware CLIs built in Go often need to set the OS system proxy — not just read it. The existing options are either buried inside a large SDK ([outline-sdk/x/sysproxy](https://pkg.go.dev/github.com/Jigsaw-Code/outline-sdk/x/sysproxy)), Windows-only, or rely on shipping pre-built binaries.
 
-`go-sysproxy` is a focused package for macOS (`networksetup`), Linux (GNOME + KDE + `/etc/environment`), and Windows (registry + Credential Manager). It covers system proxy changes, health checks, per-app config, and temporary proxy restore without external dependencies.
+`go-sysproxy` wraps the native proxy tools on macOS (`networksetup`), Linux (GNOME + KDE + `/etc/environment`), and Windows (registry + Credential Manager). It covers system proxy changes, health checks, per-app config, and temporary proxy restore. Zero external dependencies.
 
 ## Installation
 
@@ -76,10 +77,10 @@ func main() {
 err := sysproxy.Set("http://user:pass@proxy.example.com:8080", sysproxy.ScopeGlobal)
 err  = sysproxy.Unset(sysproxy.ScopeGlobal)
 
-url, err := sysproxy.Get() // reads current system proxy
+url, err := sysproxy.Get() // reads current system proxy (HTTP field)
 ```
 
-The plain wrappers stay available for backward compatibility. If you want cancellation and deadlines, use the context-aware variants:
+The plain wrappers exist for convenience. Use the context-aware variants for cancellation and deadlines:
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -90,6 +91,20 @@ err  = sysproxy.UnsetContext(ctx, sysproxy.ScopeGlobal)
 
 url, err := sysproxy.GetContext(ctx)
 ```
+
+### GetConfig — read per-protocol settings
+
+`GetConfig` returns the full proxy configuration currently active in the OS, with each protocol field populated separately:
+
+```go
+cfg, err := sysproxy.GetConfig()
+// cfg.HTTP    = "http://proxy.example.com:8080"
+// cfg.HTTPS   = "http://proxy.example.com:8080"
+// cfg.SOCKS   = "socks5://proxy.example.com:1080"
+// cfg.NoProxy = "localhost,10.0.0.0/8"
+```
+
+`GetConfigContext` is also available.
 
 ### Per-protocol proxy
 
@@ -164,6 +179,31 @@ sysproxy.SetLogger(slogAdapter{slog.Default()})
 // every Set/Unset/WriteAppConfig now emits a structured log line
 ```
 
+## CLI
+
+A standalone binary is available at `cmd/sysproxy`:
+
+```sh
+# build
+make cli          # → dist/sysproxy
+
+# or install directly
+go install github.com/mar0ls/go-sysproxy/cmd/sysproxy@latest
+```
+
+```sh
+sysproxy set http://127.0.0.1:8080
+sysproxy set http://user:pass@proxy.corp.com:8080 --scope global
+sysproxy get
+sysproxy get --json
+sysproxy unset
+sysproxy pac https://config.example.com/proxy.pac
+sysproxy check http://proxy.corp.com:8080 --timeout 10s
+sysproxy version
+```
+
+Exit codes: `0` success · `1` error · `2` proxy not set (only `get`).
+
 ## Real-world example — residential proxy
 
 The URL format works with any standard HTTP/SOCKS5 proxy provider:
@@ -186,7 +226,7 @@ _ = sysproxy.WriteAppConfig(sysproxy.AppGit,  "http://username:password@proxy.pr
 _ = sysproxy.WriteAppConfig(sysproxy.AppCurl, "http://username:password@proxy.provider.com:10000")
 ```
 
-> Credentials in proxy URLs are handled by the OS — on Windows they are stored in Credential Manager, not written to disk in plaintext.
+> Credentials in proxy URLs are handled by the OS — on Windows they are stored in Credential Manager, not in plaintext.
 
 ## Notes
 
@@ -200,6 +240,7 @@ _ = sysproxy.WriteAppConfig(sysproxy.AppCurl, "http://username:password@proxy.pr
 |---|:---:|:---:|:---:|:---:|
 | Set / Unset | ✓ | ✓ | ✓ | ✓ |
 | Get | ✓ | ✓ | — | ✓ |
+| GetConfig | ✓ | ✓ | — | ✓ |
 | SetMulti | ✓ | ✓ | ✓ | ✓ |
 | SetPAC | ✓ | ✓ | ✓ | ✓ |
 | ScopeUser (rc files) | ✓ | ✓ | ✓ | ✓ |
@@ -211,7 +252,7 @@ _ = sysproxy.WriteAppConfig(sysproxy.AppCurl, "http://username:password@proxy.pr
 
 - **Command allowlist** — `exec.Command` is restricted to a fixed set of permitted binaries. No user-supplied input reaches the shell.
 - **Config files** — written with mode `0600`.
-- **Static analysis** — code is checked with [golangci-lint](https://golangci-lint.run) (including `gosec`, `errcheck`, `staticcheck`) and [Semgrep](https://semgrep.dev) on every commit.
+- **Static analysis** — code is checked with [golangci-lint](https://golangci-lint.run) (including `gosec`, `errcheck`, `staticcheck`) on every push.
 
 ## License
 

@@ -33,7 +33,22 @@ const (
 	ScopeGlobal
 )
 
-// ProxyConfig allows configuring a different proxy URL per protocol.
+// String returns a human-readable name for the scope.
+func (s ProxyScope) String() string {
+	switch s {
+	case ScopeShell:
+		return "shell"
+	case ScopeUser:
+		return "user"
+	case ScopeGlobal:
+		return "global"
+	default:
+		return "unknown"
+	}
+}
+
+// ProxyConfig holds per-protocol proxy URLs for SetMulti.
+// Any field left empty is ignored.
 type ProxyConfig struct {
 	HTTP    string
 	HTTPS   string
@@ -74,7 +89,7 @@ func SetContext(ctx context.Context, proxyURL string, scope ProxyScope) error {
 		return err
 	case ScopeGlobal:
 		setEnvVars(proxyURL)
-		err = setGlobal(ctx, p)
+		err = activeBackend.SetGlobal(ctx, p)
 		logf("set proxy scope=global url=%s err=%v", proxyURL, err)
 		return err
 	default:
@@ -108,7 +123,7 @@ func UnsetContext(ctx context.Context, scope ProxyScope) error {
 		return err
 	case ScopeGlobal:
 		unsetEnvVars()
-		err := unsetGlobal(ctx)
+		err := activeBackend.UnsetGlobal(ctx)
 		logf("unset proxy scope=global err=%v", err)
 		return err
 	default:
@@ -128,7 +143,23 @@ func GetContext(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return getGlobal(ctx)
+	return activeBackend.GetGlobal(ctx)
+}
+
+// GetConfig returns the per-protocol proxy configuration currently active in
+// the OS system settings. Fields are empty when that protocol has no proxy set.
+// Only ScopeGlobal is supported; read os.Getenv for shell-scope values.
+func GetConfig() (ProxyConfig, error) {
+	return GetConfigContext(context.Background())
+}
+
+// GetConfigContext is like GetConfig but respects context cancellation.
+func GetConfigContext(ctx context.Context) (ProxyConfig, error) {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return ProxyConfig{}, err
+	}
+	return activeBackend.GetGlobalConfig(ctx)
 }
 
 // SetMulti configures per-protocol proxies. Any field left empty is not changed.
@@ -159,7 +190,7 @@ func SetMultiContext(ctx context.Context, cfg ProxyConfig, scope ProxyScope) err
 		return setUserMulti(cfg)
 	case ScopeGlobal:
 		setEnvVarsMulti(cfg)
-		return setGlobalMulti(ctx, cfg)
+		return activeBackend.SetGlobalMulti(ctx, cfg)
 	default:
 		return fmt.Errorf("sysproxy: invalid scope %d", scope)
 	}
@@ -190,7 +221,7 @@ func SetPACContext(ctx context.Context, pacURL string, scope ProxyScope) error {
 		return setUserPAC(pacURL)
 	case ScopeGlobal:
 		setEnvVarsPAC(pacURL)
-		return setGlobalPAC(ctx, pacURL)
+		return activeBackend.SetGlobalPAC(ctx, pacURL)
 	default:
 		return fmt.Errorf("sysproxy: invalid scope %d", scope)
 	}
