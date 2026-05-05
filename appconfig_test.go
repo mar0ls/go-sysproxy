@@ -448,3 +448,218 @@ func TestRemoveINIKeyOnlyAffectsTargetSection(t *testing.T) {
 		t.Fatalf("expected same key in another section to stay, got %q", text)
 	}
 }
+
+func TestWriteCurlRC(t *testing.T) {
+	home := setTestHome(t)
+	path := filepath.Join(home, ".curlrc")
+
+	if err := writeCurlRC("http://proxy.example.com:8080"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path) //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "proxy = http://proxy.example.com:8080") {
+		t.Fatalf("expected proxy entry, got %q", string(data))
+	}
+}
+
+func TestClearCurlRC(t *testing.T) {
+	home := setTestHome(t)
+	path := filepath.Join(home, ".curlrc")
+	if err := os.WriteFile(path, []byte("proxy = http://proxy.example.com:8080\nmax-time = 30\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := clearCurlRC(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path) //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "proxy = ") {
+		t.Fatalf("expected proxy entry removed, got %q", string(data))
+	}
+	if !strings.Contains(string(data), "max-time = 30") {
+		t.Fatalf("expected unrelated entry to stay, got %q", string(data))
+	}
+}
+
+func TestWriteWgetRC(t *testing.T) {
+	home := setTestHome(t)
+	path := filepath.Join(home, ".wgetrc")
+
+	if err := writeWgetRC("http://proxy.example.com:8080"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path) //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "http_proxy = http://proxy.example.com:8080") {
+		t.Fatalf("expected http_proxy entry, got %q", text)
+	}
+	if !strings.Contains(text, "https_proxy = http://proxy.example.com:8080") {
+		t.Fatalf("expected https_proxy entry, got %q", text)
+	}
+}
+
+func TestWritePipConf(t *testing.T) {
+	home := setTestHome(t)
+	path := filepath.Join(home, ".config", "pip", "pip.conf")
+
+	if err := writePipConf("http://proxy.example.com:8080"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path) //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "[global]") {
+		t.Fatalf("expected [global] section, got %q", text)
+	}
+	if !strings.Contains(text, "proxy = http://proxy.example.com:8080") {
+		t.Fatalf("expected proxy entry, got %q", text)
+	}
+}
+
+func TestClearGitProxyNotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	err := clearGitProxy(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "git not found") {
+		t.Fatalf("expected git not found error, got %v", err)
+	}
+}
+
+func TestWriteNPMProxyNotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	err := writeNPMProxy(context.Background(), "http://proxy.example.com:8080")
+	if err == nil || !strings.Contains(err.Error(), "npm not found") {
+		t.Fatalf("expected npm not found error, got %v", err)
+	}
+}
+
+func TestClearNPMProxyNotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	err := clearNPMProxy(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "npm not found") {
+		t.Fatalf("expected npm not found error, got %v", err)
+	}
+}
+
+func TestWriteGitProxyHTTPSFailure(t *testing.T) {
+	_ = installFakeCommand(t, "git")
+	t.Setenv("SYSPROXY_TEST_FAIL_ON", "https.proxy")
+
+	err := writeGitProxy(context.Background(), "http://proxy.example.com:8080")
+	if err == nil || !strings.Contains(err.Error(), "git config https.proxy") {
+		t.Fatalf("expected https.proxy error, got %v", err)
+	}
+}
+
+func TestWriteNPMProxyFirstCmdFailure(t *testing.T) {
+	_ = installFakeCommand(t, "npm")
+	t.Setenv("SYSPROXY_TEST_FAIL_ON", "set proxy")
+
+	err := writeNPMProxy(context.Background(), "http://proxy.example.com:8080")
+	if err == nil || !strings.Contains(err.Error(), "npm config set proxy") {
+		t.Fatalf("expected proxy set error, got %v", err)
+	}
+}
+
+func TestWritePipConfMkdirAllError(t *testing.T) {
+	home := setTestHome(t)
+	// Block the pip config dir by creating a file where the directory would be.
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "pip"), []byte("not a dir"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writePipConf("http://proxy.example.com:8080"); err == nil {
+		t.Fatal("expected error when pip dir blocked by file")
+	}
+}
+
+func TestEditKeyValueFileReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced the same way on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "conf")
+	if err := os.WriteFile(path, []byte("key = val\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := editKeyValueFile(path, "key", "newval", " = "); err == nil {
+		t.Fatal("expected error reading unreadable file")
+	}
+}
+
+func TestRemoveKeysFromFileReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced the same way on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "conf")
+	if err := os.WriteFile(path, []byte("key = val\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeKeysFromFile(path, " = ", "key"); err == nil {
+		t.Fatal("expected error reading unreadable file")
+	}
+}
+
+func TestRemoveINIKeyReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced the same way on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "conf.ini")
+	if err := os.WriteFile(path, []byte("[global]\nproxy = http://proxy.example.com\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeINIKey(path, "global", "proxy"); err == nil {
+		t.Fatal("expected error reading unreadable file")
+	}
+}
+
+func TestEditINIFileReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced the same way on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "conf.ini")
+	if err := os.WriteFile(path, []byte("[global]\nproxy = old\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := editINIFile(path, "global", "proxy", "http://proxy.example.com:8080"); err == nil {
+		t.Fatal("expected error reading unreadable file")
+	}
+}
+
+func TestWriteWgetRCReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced the same way on Windows")
+	}
+	home := setTestHome(t)
+	path := filepath.Join(home, ".wgetrc")
+	if err := os.WriteFile(path, []byte("old = val\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeWgetRC("http://proxy.example.com:8080"); err == nil {
+		t.Fatal("expected error reading unreadable .wgetrc")
+	}
+}
