@@ -1,3 +1,5 @@
 ROADMAP.md
 coverage.out
 dist/
+scripts/smoke/*
+VM_SMOKE*

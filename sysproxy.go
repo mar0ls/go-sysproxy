@@ -50,10 +50,10 @@ func (s ProxyScope) String() string {
 // ProxyConfig holds per-protocol proxy URLs for SetMulti.
 // Any field left empty is ignored.
 type ProxyConfig struct {
-	HTTP    string
-	HTTPS   string
-	SOCKS   string
-	NoProxy string // comma-separated bypass list, e.g. "localhost,10.0.0.0/8"
+	HTTP    string `json:"http,omitempty"`
+	HTTPS   string `json:"https,omitempty"`
+	SOCKS   string `json:"socks,omitempty"`
+	NoProxy string `json:"no_proxy,omitempty"` // comma-separated bypass list, e.g. "localhost,10.0.0.0/8"
 }
 
 // Set configures the OS system proxy to proxyURL for the given scope.

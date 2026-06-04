@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -44,13 +45,20 @@ Examples:
 `
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(1)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run parses argv and dispatches to a command, returning the process exit code.
+// It is separated from main so it can be exercised in unit tests without
+// spawning a subprocess or calling os.Exit.
+func run(argv []string, stdout, stderr io.Writer) int {
+	if len(argv) < 1 {
+		_, _ = fmt.Fprint(stderr, usage)
+		return 1
 	}
 
-	cmd := os.Args[1]
-	args := os.Args[2:]
+	cmd := argv[0]
+	args := argv[1:]
 
 	// shared flags
 	scopeStr := "global"
@@ -61,19 +69,19 @@ func main() {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--scope":
-			i++
-			if i >= len(args) {
-				die("--scope requires a value: shell|user|global")
+			if i+1 >= len(args) {
+				return die(stderr, "--scope requires a value: shell|user|global")
 			}
-			scopeStr = args[i]
+			scopeStr = args[i+1] //nolint:gosec // bounds checked on the line above
+			i++
 		case "--json":
 			jsonOut = true
 		case "--timeout":
-			i++
-			if i >= len(args) {
-				die("--timeout requires a duration value, e.g. 5s")
+			if i+1 >= len(args) {
+				return die(stderr, "--timeout requires a duration value, e.g. 5s")
 			}
-			timeoutStr = args[i]
+			timeoutStr = args[i+1] //nolint:gosec // bounds checked on the line above
+			i++
 		default:
 			positional = append(positional, args[i])
 		}
@@ -81,100 +89,112 @@ func main() {
 
 	scope, err := parseScope(scopeStr)
 	if err != nil {
-		die(err.Error())
+		return die(stderr, err.Error())
 	}
 
 	timeout, err := time.ParseDuration(timeoutStr)
 	if err != nil {
-		die("invalid --timeout value: " + err.Error())
+		return die(stderr, "invalid --timeout value: "+err.Error())
 	}
 
 	switch cmd {
 	case "set":
 		if len(positional) < 1 {
-			die("usage: sysproxy set <url>")
+			return die(stderr, "usage: sysproxy set <url>")
 		}
-		cmdSet(positional[0], scope, jsonOut)
+		return cmdSet(positional[0], scope, jsonOut, stdout, stderr)
 	case "get":
-		cmdGet(jsonOut)
+		return cmdGet(jsonOut, stdout, stderr)
 	case "unset":
-		cmdUnset(scope, jsonOut)
+		return cmdUnset(scope, jsonOut, stdout, stderr)
 	case "pac":
 		if len(positional) < 1 {
-			die("usage: sysproxy pac <url>")
+			return die(stderr, "usage: sysproxy pac <url>")
 		}
-		cmdPAC(positional[0], scope, jsonOut)
+		return cmdPAC(positional[0], scope, jsonOut, stdout, stderr)
 	case "check":
 		if len(positional) < 1 {
-			die("usage: sysproxy check <url>")
+			return die(stderr, "usage: sysproxy check <url>")
 		}
-		cmdCheck(positional[0], timeout, jsonOut)
+		return cmdCheck(positional[0], timeout, jsonOut, stdout, stderr)
 	case "version":
-		fmt.Println(buildinfo.Summary())
+		_, _ = fmt.Fprintln(stdout, buildinfo.Summary())
+		return 0
 	case "--help", "-h", "help":
-		fmt.Print(usage)
+		_, _ = fmt.Fprint(stdout, usage)
+		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %q\n\n", cmd)
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(1)
+		_, _ = fmt.Fprintf(stderr, "unknown command: %q\n\n", cmd)
+		_, _ = fmt.Fprint(stderr, usage)
+		return 1
 	}
 }
 
-func cmdSet(proxyURL string, scope sysproxy.ProxyScope, jsonOut bool) {
+func cmdSet(proxyURL string, scope sysproxy.ProxyScope, jsonOut bool, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := sysproxy.SetContext(ctx, proxyURL, scope); err != nil {
-		dieJSON(jsonOut, "set failed: "+err.Error())
+		return dieJSON(jsonOut, "set failed: "+err.Error(), stdout, stderr)
 	}
-	printOK(jsonOut, map[string]any{"proxy": proxyURL, "scope": scope.String()})
+	printOK(jsonOut, map[string]any{"proxy": proxyURL, "scope": scope.String()}, stdout)
+	return 0
 }
 
-func cmdGet(jsonOut bool) {
+func cmdGet(jsonOut bool, stdout, stderr io.Writer) int {
+	if jsonOut {
+		cfg, err := sysproxy.GetConfig()
+		if err != nil {
+			printJSON(stdout, map[string]any{"error": err.Error()})
+			return 2
+		}
+		if cfg.HTTP == "" && cfg.HTTPS == "" && cfg.SOCKS == "" {
+			printJSON(stdout, map[string]any{"error": "proxy not set"})
+			return 2
+		}
+		printJSON(stdout, cfg)
+		return 0
+	}
 	url, err := sysproxy.Get()
 	if err != nil {
-		if jsonOut {
-			printJSON(map[string]any{"error": "proxy not set"})
-		} else {
-			fmt.Fprintln(os.Stderr, "proxy not set")
-		}
-		os.Exit(2)
+		_, _ = fmt.Fprintln(stderr, "proxy not set")
+		return 2
 	}
-	if jsonOut {
-		printJSON(map[string]any{"proxy": url})
-	} else {
-		fmt.Println(url)
-	}
+	_, _ = fmt.Fprintln(stdout, url)
+	return 0
 }
 
-func cmdUnset(scope sysproxy.ProxyScope, jsonOut bool) {
+func cmdUnset(scope sysproxy.ProxyScope, jsonOut bool, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := sysproxy.UnsetContext(ctx, scope); err != nil {
-		dieJSON(jsonOut, "unset failed: "+err.Error())
+		return dieJSON(jsonOut, "unset failed: "+err.Error(), stdout, stderr)
 	}
-	printOK(jsonOut, map[string]any{"scope": scope.String()})
+	printOK(jsonOut, map[string]any{"scope": scope.String()}, stdout)
+	return 0
 }
 
-func cmdPAC(pacURL string, scope sysproxy.ProxyScope, jsonOut bool) {
+func cmdPAC(pacURL string, scope sysproxy.ProxyScope, jsonOut bool, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := sysproxy.SetPACContext(ctx, pacURL, scope); err != nil {
-		dieJSON(jsonOut, "pac failed: "+err.Error())
+		return dieJSON(jsonOut, "pac failed: "+err.Error(), stdout, stderr)
 	}
-	printOK(jsonOut, map[string]any{"pac": pacURL, "scope": scope.String()})
+	printOK(jsonOut, map[string]any{"pac": pacURL, "scope": scope.String()}, stdout)
+	return 0
 }
 
-func cmdCheck(proxyURL string, timeout time.Duration, jsonOut bool) {
+func cmdCheck(proxyURL string, timeout time.Duration, jsonOut bool, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	if err := sysproxy.Check(ctx, proxyURL); err != nil {
-		dieJSON(jsonOut, "unreachable: "+err.Error())
+		return dieJSON(jsonOut, "unreachable: "+err.Error(), stdout, stderr)
 	}
-	printOK(jsonOut, map[string]any{"proxy": proxyURL, "reachable": true})
+	printOK(jsonOut, map[string]any{"proxy": proxyURL, "reachable": true}, stdout)
+	return 0
 }
 
 func parseScope(s string) (sysproxy.ProxyScope, error) {
@@ -190,31 +210,31 @@ func parseScope(s string) (sysproxy.ProxyScope, error) {
 	}
 }
 
-func printOK(jsonOut bool, fields map[string]any) {
+func printOK(jsonOut bool, fields map[string]any, stdout io.Writer) {
 	if jsonOut {
 		fields["ok"] = true
-		printJSON(fields)
+		printJSON(stdout, fields)
 	} else {
-		fmt.Println("ok")
+		_, _ = fmt.Fprintln(stdout, "ok")
 	}
 }
 
-func printJSON(v any) {
-	enc := json.NewEncoder(os.Stdout)
+func printJSON(stdout io.Writer, v any) {
+	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)
 }
 
-func die(msg string) {
-	fmt.Fprintln(os.Stderr, "error: "+msg)
-	os.Exit(1)
+func die(stderr io.Writer, msg string) int {
+	_, _ = fmt.Fprintln(stderr, "error: "+msg)
+	return 1
 }
 
-func dieJSON(jsonOut bool, msg string) {
+func dieJSON(jsonOut bool, msg string, stdout, stderr io.Writer) int {
 	if jsonOut {
-		printJSON(map[string]any{"ok": false, "error": msg})
+		printJSON(stdout, map[string]any{"ok": false, "error": msg})
 	} else {
-		fmt.Fprintln(os.Stderr, "error: "+msg)
+		_, _ = fmt.Fprintln(stderr, "error: "+msg)
 	}
-	os.Exit(1)
+	return 1
 }

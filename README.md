@@ -127,6 +127,10 @@ err := sysproxy.SetPAC("https://config.example.com/proxy.pac", sysproxy.ScopeGlo
 
 `SetPACContext` is also available for deadline-aware callers.
 
+Note: `SetPAC` switches the OS into auto-proxy (PAC) mode. In that mode,
+`Get` / `GetConfig` report manual proxy state, so they may return
+"proxy not set" / "proxy not enabled" even though PAC is active.
+
 ### Temporary proxy
 
 `WithProxy` sets the proxy for the duration of `fn` and restores the previous state on return — even if `fn` returns an error.
@@ -246,7 +250,28 @@ _ = sysproxy.WriteAppConfig(sysproxy.AppCurl, "http://username:password@proxy.pr
 | ScopeUser (rc files) | ✓ | ✓ | ✓ | ✓ |
 | Credential Manager | — | — | — | ✓ |
 
-> **Linux:** `ScopeGlobal` writes `/etc/environment` (requires root) and calls `gsettings`/`kwriteconfig5` for the active desktop session.
+> **Linux:** `ScopeGlobal` writes `/etc/environment` (requires root) and calls `gsettings` **and** `kwriteconfig5` if available, so hybrid GNOME/KDE setups are covered without desktop detection. Failure to write `/etc/environment` is returned as a non-critical error — use `sysproxy.IsNonCritical(err)` to distinguish it from a hard failure.
+
+## Comparison with alternatives
+
+The table below compares `go-sysproxy` with other Go proxy-management libraries by API surface and behavior.
+
+| | `mar0ls/go-sysproxy` | [`Jigsaw-Code/outline-sdk/x/sysproxy`](https://pkg.go.dev/github.com/Jigsaw-Code/outline-sdk/x/sysproxy) |
+|---|:---:|:---:|
+| macOS (`networksetup`) | ✓ | ✓ |
+| Linux GNOME (`gsettings`) | ✓ | ✓ |
+| Linux KDE (`kwriteconfig5`) | ✓ | — |
+| Windows (registry + `cmdkey`) | ✓ | ✓ |
+| `Get` / `GetConfig` per protocol | ✓ | partial |
+| `SetMulti` (HTTP/HTTPS/SOCKS + NoProxy) | ✓ | — |
+| `SetPAC` | ✓ | — |
+| `Check` (TCP reachability) | ✓ | — |
+| `WithProxy` (temporary, auto-restore) | ✓ | — |
+| `WriteAppConfig` (rc files for git/npm/pip/…) | ✓ | — |
+| Context-aware API (`*Context`) | ✓ | partial |
+| Standalone module, no SDK to import | ✓ | — (part of outline-sdk) |
+| Zero external dependencies | ✓ | — |
+| CLI (`sysproxy` binary, `--json`) | ✓ | — |
 
 ## Security
 

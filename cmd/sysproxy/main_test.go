@@ -105,7 +105,7 @@ func TestGetNotSet_ExitCode2(t *testing.T) {
 	}
 }
 
-// TestGetJSON_OutputShape verifies the JSON output is valid JSON with expected key.
+// TestGetJSON_OutputShape verifies the JSON output is valid JSON with expected key(s).
 func TestGetJSON_OutputShape(t *testing.T) {
 	if os.Getenv("CI") == "" && os.Getenv("SYSPROXY_INTEGRATION") == "" {
 		t.Skip("skipping get test outside CI/SYSPROXY_INTEGRATION to avoid touching OS settings")
@@ -119,10 +119,11 @@ func TestGetJSON_OutputShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &m); err != nil {
 		t.Fatalf("output is not valid JSON: %v\nraw: %q", err, out)
 	}
-	if _, hasProxy := m["proxy"]; !hasProxy {
-		if _, hasErr := m["error"]; !hasErr {
-			t.Errorf("JSON output missing 'proxy' or 'error' key: %v", m)
-		}
+	if _, hasErr := m["error"]; hasErr {
+		return
+	}
+	if _, hasHTTP := m["http"]; !hasHTTP {
+		t.Errorf("JSON output missing 'http' or 'error' key: %v", m)
 	}
 }
 

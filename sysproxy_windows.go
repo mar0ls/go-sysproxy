@@ -26,6 +26,7 @@ func runRundll32(ctx context.Context, args ...string) error {
 }
 
 func setGlobal(ctx context.Context, p *proxy) error {
+	_ = runReg(ctx, "delete", regKey, "/v", "AutoConfigURL", "/f")
 	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
 	_ = runReg(ctx, "add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", p.host+":"+p.port, "/f")
 	_ = runReg(ctx, "add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", "localhost;127.0.0.1;::1", "/f")
@@ -40,6 +41,7 @@ func unsetGlobal(ctx context.Context) error {
 	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f")
 	_ = runReg(ctx, "delete", regKey, "/v", "ProxyServer", "/f")
 	_ = runReg(ctx, "delete", regKey, "/v", "ProxyOverride", "/f")
+	_ = runReg(ctx, "delete", regKey, "/v", "AutoConfigURL", "/f")
 	if host, err := currentProxyHost(ctx); err == nil && host != "" {
 		_ = runCmdkey(ctx, "/delete:"+host)
 	}
@@ -95,6 +97,7 @@ func setGlobalPAC(ctx context.Context, pacURL string) error {
 }
 
 func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
+	_ = runReg(ctx, "delete", regKey, "/v", "AutoConfigURL", "/f")
 	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
 	var servers []string
 	if cfg.HTTP != "" {
