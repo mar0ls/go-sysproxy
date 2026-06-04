@@ -100,3 +100,30 @@ func ExampleSetLogger() {
 	fmt.Println("logging disabled")
 	// Output: logging disabled
 }
+
+func ExampleGet() {
+	url, err := sysproxy.Get()
+	if err != nil {
+		log.Printf("no proxy configured: %v", err)
+		return
+	}
+	fmt.Println("current proxy:", url)
+}
+
+func ExampleGetConfig() {
+	cfg, err := sysproxy.GetConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("HTTP:", cfg.HTTP)
+	fmt.Println("HTTPS:", cfg.HTTPS)
+	fmt.Println("SOCKS:", cfg.SOCKS)
+	fmt.Println("NoProxy:", cfg.NoProxy)
+}
+
+func ExampleSetPAC() {
+	if err := sysproxy.SetPAC("http://wpad.example.com/proxy.pac", sysproxy.ScopeGlobal); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("PAC configured")
+}

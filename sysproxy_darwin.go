@@ -44,6 +44,10 @@ func unsetGlobal(ctx context.Context) error {
 		_ = runNetworkSetup(ctx, "-setwebproxystate", svc, "off")
 		_ = runNetworkSetup(ctx, "-setsecurewebproxystate", svc, "off")
 		_ = runNetworkSetup(ctx, "-setsocksfirewallproxystate", svc, "off")
+		// Clear host/port so the previous values do not stay visible in System Settings.
+		_ = runNetworkSetup(ctx, "-setwebproxy", svc, "", "0")
+		_ = runNetworkSetup(ctx, "-setsecurewebproxy", svc, "", "0")
+		_ = runNetworkSetup(ctx, "-setsocksfirewallproxy", svc, "", "0")
 	}
 	return nil
 }

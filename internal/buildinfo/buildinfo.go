@@ -2,7 +2,7 @@ package buildinfo
 
 import "fmt"
 
-// Injected via -ldflags at build time.
+// Version, Commit, and BuildDate are injected via -ldflags at build time.
 var (
 	Version   = "dev"
 	Commit    = "unknown"
