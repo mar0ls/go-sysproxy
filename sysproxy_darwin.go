@@ -19,6 +19,8 @@ func setGlobal(ctx context.Context, p *proxy) error {
 		return err
 	}
 	for _, svc := range services {
+		// Ensure manual proxy mode is authoritative and PAC does not stay active.
+		_ = runNetworkSetup(ctx, "-setautoproxystate", svc, "off")
 		if p.user != "" {
 			_ = runNetworkSetup(ctx, "-setwebproxy", svc, p.host, p.port, "on", p.user, p.pass)
 			_ = runNetworkSetup(ctx, "-setsecurewebproxy", svc, p.host, p.port, "on", p.user, p.pass)
@@ -41,6 +43,8 @@ func unsetGlobal(ctx context.Context) error {
 		return err
 	}
 	for _, svc := range services {
+		// Unset should clear both manual and auto-proxy modes.
+		_ = runNetworkSetup(ctx, "-setautoproxystate", svc, "off")
 		_ = runNetworkSetup(ctx, "-setwebproxystate", svc, "off")
 		_ = runNetworkSetup(ctx, "-setsecurewebproxystate", svc, "off")
 		_ = runNetworkSetup(ctx, "-setsocksfirewallproxystate", svc, "off")
@@ -184,6 +188,8 @@ func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 		return err
 	}
 	for _, svc := range services {
+		// Multi-protocol manual config should disable PAC mode.
+		_ = runNetworkSetup(ctx, "-setautoproxystate", svc, "off")
 		if cfg.HTTP != "" {
 			_ = runNetworkSetup(ctx, "-setwebproxy", svc, hostFromURL(cfg.HTTP), portFromURL(cfg.HTTP))
 			_ = runNetworkSetup(ctx, "-setwebproxystate", svc, "on")
