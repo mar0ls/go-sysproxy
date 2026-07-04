@@ -118,7 +118,7 @@ func runGit(ctx context.Context, args ...string) error {
 
 func writeGitProxy(ctx context.Context, proxyURL string) error {
 	if !isAvailable("git") {
-		return fmt.Errorf("sysproxy: git not found in PATH")
+		return fmt.Errorf("%w: git", ErrToolMissing)
 	}
 	if err := runGit(ctx, "config", "--global", "http.proxy", proxyURL); err != nil {
 		return fmt.Errorf("sysproxy: git config http.proxy: %w", err)
@@ -131,7 +131,7 @@ func writeGitProxy(ctx context.Context, proxyURL string) error {
 
 func clearGitProxy(ctx context.Context) error {
 	if !isAvailable("git") {
-		return fmt.Errorf("sysproxy: git not found in PATH")
+		return fmt.Errorf("%w: git", ErrToolMissing)
 	}
 	_ = runGit(ctx, "config", "--global", "--unset", "http.proxy")
 	_ = runGit(ctx, "config", "--global", "--unset", "https.proxy")
@@ -146,7 +146,7 @@ func runNPM(ctx context.Context, args ...string) error {
 
 func writeNPMProxy(ctx context.Context, proxyURL string) error {
 	if !isAvailable("npm") {
-		return fmt.Errorf("sysproxy: npm not found in PATH")
+		return fmt.Errorf("%w: npm", ErrToolMissing)
 	}
 	if err := runNPM(ctx, "config", "set", "proxy", proxyURL); err != nil {
 		return fmt.Errorf("sysproxy: npm config set proxy: %w", err)
@@ -159,7 +159,7 @@ func writeNPMProxy(ctx context.Context, proxyURL string) error {
 
 func clearNPMProxy(ctx context.Context) error {
 	if !isAvailable("npm") {
-		return fmt.Errorf("sysproxy: npm not found in PATH")
+		return fmt.Errorf("%w: npm", ErrToolMissing)
 	}
 	_ = runNPM(ctx, "config", "delete", "proxy")
 	_ = runNPM(ctx, "config", "delete", "https-proxy")

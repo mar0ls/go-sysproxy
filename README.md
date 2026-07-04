@@ -102,6 +102,7 @@ cfg, err := sysproxy.GetConfig()
 // cfg.HTTPS   = "http://proxy.example.com:8080"
 // cfg.SOCKS   = "socks5://proxy.example.com:1080"
 // cfg.NoProxy = "localhost,10.0.0.0/8"
+// cfg.PAC     = ""  // populated when auto-proxy (PAC) is active instead of a manual proxy
 ```
 
 `GetConfigContext` is also available.
@@ -133,7 +134,7 @@ Note: `SetPAC` switches the OS into auto-proxy (PAC) mode. In that mode,
 
 ### Temporary proxy
 
-`WithProxy` sets the proxy for the duration of `fn` and restores the previous state on return — even if `fn` returns an error.
+`WithProxy` sets the proxy for the duration of `fn` and restores the previous state on return — even if `fn` returns an error. The snapshot covers the full `ProxyConfig` (HTTP + HTTPS + SOCKS + NoProxy + PAC), not just the HTTP field.
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -144,6 +145,44 @@ err := sysproxy.WithProxy(ctx, "socks5://proxy.example.com:1080", sysproxy.Scope
         return doSensitiveRequest(ctx)
     },
 )
+```
+
+`WithProxyMulti` is the multi-protocol variant:
+
+```go
+err := sysproxy.WithProxyMulti(ctx, sysproxy.ProxyConfig{
+    HTTP:  "http://http-proxy.example.com:8080",
+    SOCKS: "socks5://socks-proxy.example.com:1080",
+}, sysproxy.ScopeGlobal, func(ctx context.Context) error {
+    return doWork(ctx)
+})
+```
+
+### Error classification
+
+The package exposes sentinel errors so callers can branch precisely with `errors.Is`:
+
+```go
+_, err := sysproxy.GetConfig()
+switch {
+case errors.Is(err, sysproxy.ErrProxyNotSet):
+    // no manual proxy configured
+case errors.Is(err, sysproxy.ErrProxyNotEnabled):
+    // proxy entry exists but is disabled (e.g. Windows ProxyEnable=0)
+case errors.Is(err, sysproxy.ErrUnsupportedPlatform):
+    // this GOOS has no sysproxy backend compiled in
+}
+
+// non-critical failures (e.g. /etc/environment without root):
+if err := sysproxy.Set(url, sysproxy.ScopeGlobal); err != nil {
+    if sysproxy.RequiresElevation(err) {
+        log.Println("sudo required for system-wide effect; per-desktop settings still applied")
+    } else if sysproxy.IsNonCritical(err) {
+        log.Println("partial success:", err)
+    } else {
+        return err
+    }
+}
 ```
 
 ### Health check
@@ -243,8 +282,9 @@ _ = sysproxy.WriteAppConfig(sysproxy.AppCurl, "http://username:password@proxy.pr
 | Feature | macOS | Linux (GNOME) | Linux (KDE) | Windows |
 |---|:---:|:---:|:---:|:---:|
 | Set / Unset | ✓ | ✓ | ✓ | ✓ |
-| Get | ✓ | ✓ | — | ✓ |
-| GetConfig | ✓ | ✓ | — | ✓ |
+| Get | ✓ | ✓ | ✓ | ✓ |
+| GetConfig | ✓ | ✓ | ✓ | ✓ |
+| GetConfig (PAC field) | ✓ | ✓ | ✓ | ✓ |
 | SetMulti | ✓ | ✓ | ✓ | ✓ |
 | SetPAC | ✓ | ✓ | ✓ | ✓ |
 | ScopeUser (rc files) | ✓ | ✓ | ✓ | ✓ |

@@ -2,6 +2,7 @@ package sysproxy
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -106,8 +107,8 @@ func TestWriteGitProxyNotFound(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	err := writeGitProxy(context.Background(), "http://proxy.example.com:8080")
-	if err == nil || !strings.Contains(err.Error(), "git not found") {
-		t.Fatalf("expected git not found error, got %v", err)
+	if err == nil || !errors.Is(err, ErrToolMissing) {
+		t.Fatalf("expected ErrToolMissing, got %v", err)
 	}
 }
 
@@ -535,8 +536,8 @@ func TestClearGitProxyNotFound(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	err := clearGitProxy(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "git not found") {
-		t.Fatalf("expected git not found error, got %v", err)
+	if err == nil || !errors.Is(err, ErrToolMissing) {
+		t.Fatalf("expected ErrToolMissing, got %v", err)
 	}
 }
 
@@ -544,8 +545,8 @@ func TestWriteNPMProxyNotFound(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	err := writeNPMProxy(context.Background(), "http://proxy.example.com:8080")
-	if err == nil || !strings.Contains(err.Error(), "npm not found") {
-		t.Fatalf("expected npm not found error, got %v", err)
+	if err == nil || !errors.Is(err, ErrToolMissing) {
+		t.Fatalf("expected ErrToolMissing, got %v", err)
 	}
 }
 
@@ -553,8 +554,8 @@ func TestClearNPMProxyNotFound(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	err := clearNPMProxy(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "npm not found") {
-		t.Fatalf("expected npm not found error, got %v", err)
+	if err == nil || !errors.Is(err, ErrToolMissing) {
+		t.Fatalf("expected ErrToolMissing, got %v", err)
 	}
 }
 
