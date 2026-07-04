@@ -1,5 +1,10 @@
 name: Auto-merge dev→main
 
+# The --auto flag defers merge until required status checks pass, but only if
+# main has branch protection with those checks marked "required" in
+# Settings → Branches. Without required checks configured, GitHub merges
+# immediately and CI failures do not block the merge.
+
 on:
   pull_request:
     types: [opened, reopened, synchronize]
