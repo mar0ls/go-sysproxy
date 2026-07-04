@@ -418,17 +418,26 @@ func TestSetPACGlobal_CallsBackend(t *testing.T) {
 }
 
 func TestWithProxy_RestoresPrevious(t *testing.T) {
-	const prev = "http://prev.example.com:8080"
+	prev := ProxyConfig{
+		HTTP:  "http://prev.example.com:8080",
+		HTTPS: "http://prev.example.com:8080",
+		SOCKS: "socks5://prev.example.com:1080",
+	}
 	const next = "http://next.example.com:9090"
 
 	setLog := []string{}
+	multiLog := []ProxyConfig{}
 	useMockBackend(t, &mockBackend{
 		setGlobalFn: func(_ context.Context, p *proxy) error {
 			setLog = append(setLog, p.rawURL)
 			return nil
 		},
-		unsetGlobalFn: func(_ context.Context) error { return nil },
-		getGlobalFn:   func(_ context.Context) (string, error) { return prev, nil },
+		setGlobalMultiFn: func(_ context.Context, cfg ProxyConfig) error {
+			multiLog = append(multiLog, cfg)
+			return nil
+		},
+		unsetGlobalFn:     func(_ context.Context) error { return nil },
+		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return prev, nil },
 	})
 	t.Cleanup(unsetEnvVars)
 
@@ -438,12 +447,121 @@ func TestWithProxy_RestoresPrevious(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(setLog) < 2 {
-		t.Fatalf("expected at least 2 Set calls, got %d", len(setLog))
+	if len(setLog) != 1 || setLog[0] != next {
+		t.Fatalf("expected exactly one SetGlobal(%q), got %v", next, setLog)
 	}
-	// last Set call should restore the previous proxy
-	if setLog[len(setLog)-1] != prev {
-		t.Errorf("last Set = %q, want %q", setLog[len(setLog)-1], prev)
+	if len(multiLog) != 1 || multiLog[0] != prev {
+		t.Fatalf("expected restore SetMulti(%+v), got %+v", prev, multiLog)
+	}
+}
+
+func TestWithProxy_UnsetsWhenNoPrevious(t *testing.T) {
+	unsetCalled := 0
+	useMockBackend(t, &mockBackend{
+		setGlobalFn:       func(_ context.Context, _ *proxy) error { return nil },
+		unsetGlobalFn:     func(_ context.Context) error { unsetCalled++; return nil },
+		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return ProxyConfig{}, ErrProxyNotSet },
+	})
+	t.Cleanup(unsetEnvVars)
+
+	err := WithProxy(context.Background(), "http://next:9090", ScopeGlobal, func(_ context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsetCalled != 1 {
+		t.Fatalf("expected exactly one Unset, got %d", unsetCalled)
+	}
+}
+
+func TestWithProxyMulti_RestoresPAC(t *testing.T) {
+	pacURL := "http://config.example.com/proxy.pac"
+	prev := ProxyConfig{PAC: pacURL}
+	next := ProxyConfig{HTTP: "http://next.example.com:8080"}
+
+	pacRestored := ""
+	useMockBackend(t, &mockBackend{
+		setGlobalMultiFn:  func(_ context.Context, _ ProxyConfig) error { return nil },
+		setGlobalPACFn:    func(_ context.Context, u string) error { pacRestored = u; return nil },
+		unsetGlobalFn:     func(_ context.Context) error { return nil },
+		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return prev, nil },
+	})
+	t.Cleanup(unsetEnvVars)
+
+	err := WithProxyMulti(context.Background(), next, ScopeGlobal, func(_ context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pacRestored != pacURL {
+		t.Fatalf("expected PAC %q to be restored, got %q", pacURL, pacRestored)
+	}
+}
+
+func TestWithProxy_RestoresMultiWhenSnapshotHasProtocols(t *testing.T) {
+	prev := ProxyConfig{
+		HTTP:  "http://prev.example.com:8080",
+		HTTPS: "http://prev.example.com:8443",
+	}
+	restored := ProxyConfig{}
+	useMockBackend(t, &mockBackend{
+		setGlobalFn:      func(_ context.Context, _ *proxy) error { return nil },
+		setGlobalMultiFn: func(_ context.Context, cfg ProxyConfig) error { restored = cfg; return nil },
+		unsetGlobalFn: func(_ context.Context) error {
+			t.Fatal("Unset should not be called when snapshot has state")
+			return nil
+		},
+		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return prev, nil },
+	})
+	t.Cleanup(unsetEnvVars)
+
+	err := WithProxy(context.Background(), "http://next:9090", ScopeGlobal, func(_ context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored != prev {
+		t.Fatalf("SetMulti restore = %+v, want %+v", restored, prev)
+	}
+}
+
+func TestWithProxyMulti_UnsetsWhenNoPrevious(t *testing.T) {
+	unsetCalled := 0
+	useMockBackend(t, &mockBackend{
+		setGlobalMultiFn:  func(_ context.Context, _ ProxyConfig) error { return nil },
+		unsetGlobalFn:     func(_ context.Context) error { unsetCalled++; return nil },
+		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return ProxyConfig{}, ErrProxyNotSet },
+	})
+	t.Cleanup(unsetEnvVars)
+
+	err := WithProxyMulti(context.Background(), ProxyConfig{HTTP: "http://x:8080"}, ScopeGlobal, func(_ context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsetCalled != 1 {
+		t.Fatalf("expected exactly one Unset, got %d", unsetCalled)
+	}
+}
+
+func TestWithProxy_PropagatesFnError(t *testing.T) {
+	useMockBackend(t, &mockBackend{
+		setGlobalFn:       func(_ context.Context, _ *proxy) error { return nil },
+		unsetGlobalFn:     func(_ context.Context) error { return nil },
+		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return ProxyConfig{}, ErrProxyNotSet },
+	})
+	t.Cleanup(unsetEnvVars)
+
+	sentinel := errors.New("boom")
+	err := WithProxy(context.Background(), "http://x:8080", ScopeGlobal, func(_ context.Context) error {
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
 	}
 }
 

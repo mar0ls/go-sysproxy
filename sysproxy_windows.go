@@ -72,12 +72,22 @@ func currentProxyHost(ctx context.Context) (string, error) {
 
 func getGlobal(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyEnable").Output()
-	if err != nil || !strings.Contains(string(out), "0x1") {
-		return "", fmt.Errorf("sysproxy: proxy not enabled")
+	if err != nil {
+		// ProxyEnable missing → check PAC
+		if pac, perr := readAutoConfigURL(ctx); perr == nil && pac != "" {
+			return pac, nil
+		}
+		return "", ErrProxyNotEnabled
+	}
+	if !strings.Contains(string(out), "0x1") {
+		if pac, perr := readAutoConfigURL(ctx); perr == nil && pac != "" {
+			return pac, nil
+		}
+		return "", ErrProxyNotEnabled
 	}
 	out, err = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
-		return "", fmt.Errorf("sysproxy: cannot read ProxyServer")
+		return "", fmt.Errorf("sysproxy: cannot read ProxyServer: %w", err)
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.Contains(line, "ProxyServer") {
@@ -87,7 +97,17 @@ func getGlobal(ctx context.Context) (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("sysproxy: proxy not set")
+	return "", ErrProxyNotSet
+}
+
+// readAutoConfigURL reads AutoConfigURL from the registry. A missing value
+// returns "" and nil so callers can distinguish "no PAC" from a real error.
+func readAutoConfigURL(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "AutoConfigURL").Output()
+	if err != nil {
+		return "", nil //nolint:nilerr
+	}
+	return extractRegValue(string(out), "AutoConfigURL"), nil
 }
 
 func setGlobalPAC(ctx context.Context, pacURL string) error {
@@ -118,63 +138,29 @@ func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 	return nil
 }
 
-// parseWindowsProxyServer converts a ProxyServer registry value to ProxyConfig.
-// The value is either "host:port" (single proxy for all protocols) or
-// "http=h:p;https=h:p;socks=h:p" (per-protocol).
-func parseWindowsProxyServer(server string) ProxyConfig {
-	var cfg ProxyConfig
-	if !strings.Contains(server, "=") {
-		cfg.HTTP = "http://" + server
-		cfg.HTTPS = "http://" + server
-		cfg.SOCKS = "socks5://" + server
-		return cfg
-	}
-	for _, part := range strings.Split(server, ";") {
-		kv := strings.SplitN(part, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		k, v := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
-		switch k {
-		case "http":
-			cfg.HTTP = "http://" + v
-		case "https":
-			cfg.HTTPS = "http://" + v
-		case "socks":
-			cfg.SOCKS = "socks5://" + v
-		}
-	}
-	return cfg
-}
-
-// extractRegValue returns the last whitespace-separated field on the line
-// containing key in reg.exe output.
-func extractRegValue(output, key string) string {
-	for _, line := range strings.Split(output, "\n") {
-		if strings.Contains(line, key) {
-			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				return strings.TrimSpace(parts[len(parts)-1])
-			}
-		}
-	}
-	return ""
-}
-
 func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
+	pac, _ := readAutoConfigURL(ctx)
+
 	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyEnable").Output()
-	if err != nil || !strings.Contains(string(out), "0x1") {
-		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not enabled")
+	proxyEnabled := err == nil && strings.Contains(string(out), "0x1")
+
+	if !proxyEnabled {
+		if pac != "" {
+			return ProxyConfig{PAC: pac}, nil
+		}
+		return ProxyConfig{}, ErrProxyNotEnabled
 	}
+
 	out, err = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
-		return ProxyConfig{}, fmt.Errorf("sysproxy: cannot read ProxyServer")
+		return ProxyConfig{}, fmt.Errorf("sysproxy: cannot read ProxyServer: %w", err)
 	}
 	server := extractRegValue(string(out), "ProxyServer")
 	if server == "" {
-		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not set")
+		return ProxyConfig{}, ErrProxyNotSet
 	}
 	cfg := parseWindowsProxyServer(server)
+	cfg.PAC = pac
 
 	out, _ = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyOverride").Output()
 	cfg.NoProxy = extractRegValue(string(out), "ProxyOverride")

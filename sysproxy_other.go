@@ -8,6 +8,9 @@ import (
 	"runtime"
 )
 
+// errUnsupported wraps ErrUnsupportedPlatform with the current GOOS so callers
+// can use errors.Is while still getting a specific message.
+
 func setUser(_ string) error           { return errUnsupported() }
 func unsetUser() error                 { return errUnsupported() }
 func setUserPAC(_ string) error        { return errUnsupported() }
@@ -28,5 +31,5 @@ func (otherBackend) SetGlobalMulti(_ context.Context, _ ProxyConfig) error { ret
 func init() { activeBackend = otherBackend{} }
 
 func errUnsupported() error {
-	return fmt.Errorf("sysproxy: unsupported OS %q", runtime.GOOS)
+	return fmt.Errorf("%w %q", ErrUnsupportedPlatform, runtime.GOOS)
 }

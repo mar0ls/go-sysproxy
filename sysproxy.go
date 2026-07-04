@@ -47,13 +47,17 @@ func (s ProxyScope) String() string {
 	}
 }
 
-// ProxyConfig holds per-protocol proxy URLs for SetMulti.
-// Any field left empty is ignored.
+// ProxyConfig holds per-protocol proxy URLs for SetMulti and the current
+// system configuration returned by GetConfig. Any field left empty is ignored
+// by SetMulti; empty fields returned by GetConfig indicate that protocol has
+// no proxy configured. PAC is populated by GetConfig when the OS is in
+// auto-proxy mode; SetMulti ignores it — use SetPAC to switch modes.
 type ProxyConfig struct {
 	HTTP    string `json:"http,omitempty"`
 	HTTPS   string `json:"https,omitempty"`
 	SOCKS   string `json:"socks,omitempty"`
 	NoProxy string `json:"no_proxy,omitempty"` // comma-separated bypass list, e.g. "localhost,10.0.0.0/8"
+	PAC     string `json:"pac,omitempty"`      // populated by GetConfig when auto-proxy is active
 }
 
 // Set configures the OS system proxy to proxyURL for the given scope.
@@ -229,22 +233,72 @@ func SetPACContext(ctx context.Context, pacURL string, scope ProxyScope) error {
 
 // WithProxy temporarily sets the proxy for the duration of fn, then restores
 // the previous proxy state (or clears it if no proxy was set before).
+// The restore snapshot covers the full ProxyConfig — HTTP, HTTPS, SOCKS,
+// NoProxy, and PAC — not just the HTTP field.
 //
 //	err := sysproxy.WithProxy(ctx, "socks5://proxy:1080", sysproxy.ScopeGlobal, func(ctx context.Context) error {
 //	    return doRequest(ctx)
 //	})
 func WithProxy(ctx context.Context, proxyURL string, scope ProxyScope, fn func(context.Context) error) error {
 	ctx = normalizeContext(ctx)
-	prev, prevErr := Get()
-	if err := SetContext(ctx, proxyURL, scope); err != nil {
+	snapshot, hadSnapshot := snapshotForRestore(scope)
+
+	if err := SetContext(ctx, proxyURL, scope); err != nil && !IsNonCritical(err) {
 		return err
 	}
-	defer func() {
-		if prevErr == nil && prev != "" {
-			_ = Set(prev, scope)
-		} else {
-			_ = Unset(scope)
-		}
-	}()
+	defer restoreSnapshot(scope, snapshot, hadSnapshot)
 	return fn(ctx)
+}
+
+// WithProxyMulti is the multi-protocol variant of WithProxy: it applies cfg
+// via SetMulti and restores the previous full configuration on return.
+func WithProxyMulti(ctx context.Context, cfg ProxyConfig, scope ProxyScope, fn func(context.Context) error) error {
+	ctx = normalizeContext(ctx)
+	snapshot, hadSnapshot := snapshotForRestore(scope)
+
+	if err := SetMultiContext(ctx, cfg, scope); err != nil && !IsNonCritical(err) {
+		return err
+	}
+	defer restoreSnapshot(scope, snapshot, hadSnapshot)
+	return fn(ctx)
+}
+
+// snapshotForRestore reads the current global config so WithProxy* can undo
+// its change. ScopeShell/ScopeUser have no read-back path, so the caller
+// restores by Unset.
+func snapshotForRestore(scope ProxyScope) (ProxyConfig, bool) {
+	if scope != ScopeGlobal {
+		return ProxyConfig{}, false
+	}
+	cfg, err := GetConfig()
+	if err != nil {
+		return ProxyConfig{}, false
+	}
+	return cfg, true
+}
+
+// restoreSnapshot re-applies snap after WithProxy / WithProxyMulti finishes.
+// Restore errors are logged and swallowed so they do not shadow fn's error.
+func restoreSnapshot(scope ProxyScope, snap ProxyConfig, had bool) {
+	if !had {
+		if err := Unset(scope); err != nil && !IsNonCritical(err) {
+			logf("WithProxy: restore Unset failed: %v", err)
+		}
+		return
+	}
+	if snap.PAC != "" {
+		if err := SetPAC(snap.PAC, scope); err != nil && !IsNonCritical(err) {
+			logf("WithProxy: restore SetPAC failed: %v", err)
+		}
+		return
+	}
+	if snap.HTTP == "" && snap.HTTPS == "" && snap.SOCKS == "" {
+		if err := Unset(scope); err != nil && !IsNonCritical(err) {
+			logf("WithProxy: restore Unset failed: %v", err)
+		}
+		return
+	}
+	if err := SetMulti(snap, scope); err != nil && !IsNonCritical(err) {
+		logf("WithProxy: restore SetMulti failed: %v", err)
+	}
 }

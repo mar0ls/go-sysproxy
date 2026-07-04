@@ -72,7 +72,8 @@ func getGlobal(ctx context.Context) (string, error) {
 	if err != nil || len(services) == 0 {
 		return "", fmt.Errorf("sysproxy: no network services found")
 	}
-	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-getwebproxy", services[0]).Output() //nolint:gosec
+	svc := services[0]
+	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-getwebproxy", svc).Output() //nolint:gosec
 	if err != nil {
 		return "", err
 	}
@@ -80,7 +81,41 @@ func getGlobal(ctx context.Context) (string, error) {
 	if ok && h != "" && p != "0" {
 		return "http://" + h + ":" + p, nil
 	}
-	return "", fmt.Errorf("sysproxy: proxy not set")
+	if pac, ok := readMacPAC(ctx, svc); ok {
+		return pac, nil
+	}
+	return "", ErrProxyNotSet
+}
+
+// readMacPAC returns the auto-proxy (PAC) URL for a network service when
+// auto-proxy is on. The second return value is false when auto-proxy is off
+// or the URL is empty.
+func readMacPAC(ctx context.Context, svc string) (string, bool) {
+	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-getautoproxyurl", svc).Output() //nolint:gosec
+	if err != nil {
+		return "", false
+	}
+	return parseAutoProxyOutput(string(out))
+}
+
+// parseAutoProxyOutput extracts a PAC URL from `networksetup -getautoproxyurl`
+// output. It returns ok=false when auto-proxy is disabled or the URL is a
+// placeholder (empty, "(null)").
+func parseAutoProxyOutput(out string) (string, bool) {
+	var url string
+	var enabled bool
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "URL:"):
+			url = strings.TrimSpace(strings.TrimPrefix(line, "URL:"))
+		case strings.HasPrefix(line, "Enabled: Yes"):
+			enabled = true
+		}
+	}
+	if !enabled || url == "" || url == "(null)" {
+		return "", false
+	}
+	return url, true
 }
 
 func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
@@ -93,18 +128,19 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 
 	var cfg ProxyConfig
 	for _, q := range []struct {
-		flag string
-		dest *string
+		flag   string
+		scheme string
+		dest   *string
 	}{
-		{"-getwebproxy", &cfg.HTTP},
-		{"-getsecurewebproxy", &cfg.HTTPS},
-		{"-getsocksfirewallproxy", &cfg.SOCKS},
+		{"-getwebproxy", "http", &cfg.HTTP},
+		{"-getsecurewebproxy", "http", &cfg.HTTPS},
+		{"-getsocksfirewallproxy", "socks5", &cfg.SOCKS},
 	} {
 		out, err := exec.CommandContext(ctx, "networksetup", q.flag, svc).Output() //nolint:gosec
 		if err == nil {
 			h, p, ok := parseNSProxyOutput(string(out))
 			if ok && h != "" && p != "0" {
-				*q.dest = "http://" + h + ":" + p
+				*q.dest = q.scheme + "://" + h + ":" + p
 			}
 		}
 	}
@@ -120,8 +156,12 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 		cfg.NoProxy = strings.Join(parts, ",")
 	}
 
-	if cfg.HTTP == "" && cfg.HTTPS == "" && cfg.SOCKS == "" {
-		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not set")
+	if pac, ok := readMacPAC(ctx, svc); ok {
+		cfg.PAC = pac
+	}
+
+	if cfg.HTTP == "" && cfg.HTTPS == "" && cfg.SOCKS == "" && cfg.PAC == "" {
+		return ProxyConfig{}, ErrProxyNotSet
 	}
 	return cfg, nil
 }

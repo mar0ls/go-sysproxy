@@ -4,6 +4,7 @@ package sysproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -36,6 +37,9 @@ func setGlobal(ctx context.Context, p *proxy) error {
 		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "socksProxy", p.rawURL)
 	}
 	if err := writeEtcEnvironment("/etc/environment", p.rawURL); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return asElevationError(err)
+		}
 		return &nonCriticalError{err: err}
 	}
 	return nil
@@ -49,18 +53,40 @@ func unsetGlobal(ctx context.Context) error {
 		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0")
 	}
 	if err := clearEtcEnvironment("/etc/environment"); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return asElevationError(err)
+		}
 		return &nonCriticalError{err: err}
 	}
 	return nil
 }
 
 func getGlobal(ctx context.Context) (string, error) {
-	if !isAvailable("gsettings") {
-		return "", fmt.Errorf("sysproxy: gsettings not available")
+	if isAvailable("gsettings") {
+		if url, err := getGlobalGnome(ctx); err == nil {
+			return url, nil
+		} else if !errors.Is(err, ErrProxyNotSet) {
+			return "", err
+		}
 	}
+	if isAvailable("kreadconfig5") || isAvailable("kreadconfig6") {
+		if url, err := getGlobalKDE(ctx); err == nil {
+			return url, nil
+		} else if !errors.Is(err, ErrProxyNotSet) {
+			return "", err
+		}
+	}
+	return "", ErrProxyNotSet
+}
+
+func getGlobalGnome(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy", "mode").Output()
-	if err != nil || !strings.Contains(string(out), "manual") {
-		return "", fmt.Errorf("sysproxy: proxy not set")
+	if err != nil {
+		return "", fmt.Errorf("sysproxy: gsettings mode: %w", err)
+	}
+	mode := strings.Trim(strings.TrimSpace(string(out)), "'")
+	if mode != "manual" {
+		return "", ErrProxyNotSet
 	}
 	host, err1 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy.http", "host").Output()
 	port, err2 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy.http", "port").Output()
@@ -70,7 +96,7 @@ func getGlobal(ctx context.Context) (string, error) {
 	h := strings.Trim(strings.TrimSpace(string(host)), "'")
 	p := strings.TrimSpace(string(port))
 	if h == "" || p == "0" {
-		return "", fmt.Errorf("sysproxy: proxy not set")
+		return "", ErrProxyNotSet
 	}
 	return "http://" + h + ":" + p, nil
 }
@@ -97,11 +123,40 @@ func parseGsettingsArray(raw string) string {
 }
 
 func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
-	if !isAvailable("gsettings") {
-		return ProxyConfig{}, fmt.Errorf("sysproxy: gsettings not available")
+	if isAvailable("gsettings") {
+		cfg, err := getGlobalConfigGnome(ctx)
+		if err == nil {
+			return cfg, nil
+		}
+		if !errors.Is(err, ErrProxyNotSet) {
+			return ProxyConfig{}, err
+		}
 	}
-	if gsettingsField(ctx, "org.gnome.system.proxy", "mode") != "manual" {
-		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not set")
+	if isAvailable("kreadconfig5") || isAvailable("kreadconfig6") {
+		cfg, err := getGlobalConfigKDE(ctx)
+		if err == nil {
+			return cfg, nil
+		}
+		if !errors.Is(err, ErrProxyNotSet) {
+			return ProxyConfig{}, err
+		}
+	}
+	return ProxyConfig{}, ErrProxyNotSet
+}
+
+func getGlobalConfigGnome(ctx context.Context) (ProxyConfig, error) {
+	mode := gsettingsField(ctx, "org.gnome.system.proxy", "mode")
+	switch mode {
+	case "auto":
+		pac := gsettingsField(ctx, "org.gnome.system.proxy", "autoconfig-url")
+		if pac == "" {
+			return ProxyConfig{}, ErrProxyNotSet
+		}
+		return ProxyConfig{PAC: pac}, nil
+	case "manual":
+		// handled below
+	default:
+		return ProxyConfig{}, ErrProxyNotSet
 	}
 
 	var cfg ProxyConfig
@@ -125,7 +180,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 	cfg.NoProxy = parseGsettingsArray(string(raw))
 
 	if cfg.HTTP == "" && cfg.HTTPS == "" && cfg.SOCKS == "" {
-		return ProxyConfig{}, fmt.Errorf("sysproxy: proxy not set")
+		return ProxyConfig{}, ErrProxyNotSet
 	}
 	return cfg, nil
 }
