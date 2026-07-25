@@ -18,6 +18,8 @@ jobs:
         go: ['1.23', 'stable']
     runs-on: ${{ matrix.os }}
     steps:
+      - uses: cicd-sensor/cicd-sensor-action@2b76335ff1c2dd298e983961f7a200d3fe9076c2 # v0.0.36
+        if: runner.os == 'Linux'
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
@@ -59,6 +61,8 @@ jobs:
             binary: sysproxy-windows-amd64.exe
     runs-on: ${{ matrix.os }}
     steps:
+      - uses: cicd-sensor/cicd-sensor-action@2b76335ff1c2dd298e983961f7a200d3fe9076c2 # v0.0.36
+        if: runner.os == 'Linux'
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
@@ -79,6 +83,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+      - uses: cicd-sensor/cicd-sensor-action@2b76335ff1c2dd298e983961f7a200d3fe9076c2 # v0.0.36
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
