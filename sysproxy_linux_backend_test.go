@@ -225,7 +225,7 @@ func TestLinuxPACAndMulti_NoDesktopToolsIsToolMissing(t *testing.T) {
 
 func TestLinuxGsettingsWithoutGnomeSchemaIsSkipped(t *testing.T) {
 	// gsettings exists (glib ships it on KDE too) but does not know the schema.
-	f := installFakeDesktop(t, "gsettings", "kwriteconfig5")
+	f := installFakeDesktop(t, "gsettings", "kwriteconfig5", "kreadconfig5")
 	script := "#!/bin/sh\necho \"gsettings $*\" >> \"$FAKE_DB/calls\"\n[ \"$1\" = list-keys ] && exit 1\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(f.dir, "bin", "gsettings"), []byte(script), 0o755); err != nil { //nolint:gosec
 		t.Fatal(err)
@@ -715,11 +715,15 @@ func TestLinuxKDE_NeedsBothTools(t *testing.T) {
 	}
 }
 
-func TestLinuxKDEOnlyWithoutKreadconfigIsToolMissing(t *testing.T) {
-	installFakeDesktop(t, "kwriteconfig6")
+func TestLinuxKDEWithoutKreadconfigIsNotWritten(t *testing.T) {
+	f := installFakeDesktop(t, "kwriteconfig6")
 	p, _ := parse("http://proxy.example.com:8080")
-	if err := setGlobal(context.Background(), p); !errors.Is(err, ErrToolMissing) {
-		t.Fatalf("setGlobal = %v, want ErrToolMissing", err)
+	// /etc/environment is the only thing left to write, and it is writable here.
+	if err := setGlobal(context.Background(), p); err != nil {
+		t.Fatalf("setGlobal = %v", err)
+	}
+	if strings.Contains(f.calls(), "kwriteconfig") {
+		t.Errorf("KDE was written although it cannot be read back:\n%s", f.calls())
 	}
 }
 
