@@ -361,6 +361,8 @@ The table below compares `go-sysproxy` with other Go proxy-management libraries 
 
 ## Security
 
+The assets, trust boundaries and every identified threat, with its mitigation and the tests that prove it, are in [THREAT_MODEL.md](THREAT_MODEL.md); a CI check keeps that document in step with the code.
+
 - **System tools** — `networksetup`, `route`, `gsettings`, `kwriteconfig6/5`, `kreadconfig6/5` and `reg` are run from the system directories (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`; the Windows system directory), not through `PATH`. Only a process without root rights falls back to `PATH` (Homebrew, Nix); a root process reports `ErrToolMissing` instead, so a writable `PATH` entry cannot run code as root. `git` and `npm` (`WriteAppConfig`) are your own tools and are found through `PATH`. No user-supplied input reaches a shell.
 - **Config files** — new files are created with mode `0600`; existing files keep their mode. Writes are atomic (temporary file + rename), and shell/PowerShell values are quoted, so URL, PAC and `NoProxy` input cannot inject commands.
 - **Secrets in logs and output** — the password in a proxy URL is masked (`user:***@host`) in `SetLogger` messages and error messages, and shown as `user:xxxxx@host` by the CLI. Pass a URL with a password to the CLI through stdin (`sysproxy set -`). Note that the password is still passed to `networksetup`/`git`/`npm` on their command lines, where other local users can briefly see it, and is stored in plain text by `ScopeUser` (`0600`), `WriteAppConfig` and the tools those write for.
