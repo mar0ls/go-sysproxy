@@ -81,12 +81,12 @@ export http_proxy='http://proxy.example.com:8080'
 ```
 
 - `Set` / `SetPAC` replace the block; `SetMulti` updates only the variables it is given. Repeating a call never adds lines.
-- Only rc files that already exist are edited (`~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.bash_profile`). If none exists, one is created for your `$SHELL` (`~/.zshrc` on macOS). go-sysproxy never creates `~/.bash_profile` next to an existing `~/.profile`, because that would stop bash login shells from reading `~/.profile`.
+- Only rc files that already exist are edited (`~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.bash_profile`). If none exists, one is created for your `$SHELL` (`~/.zshrc` on macOS). zsh users always get a `~/.zshrc` block, since zsh reads neither `~/.profile` nor `~/.bashrc`. go-sysproxy never creates `~/.bash_profile` next to an existing `~/.profile`, because that would stop bash login shells from reading `~/.profile`.
 - Files are replaced atomically; mode, owner and symlinks (dotfile managers) are preserved.
 - `Unset` removes the block, plus the unmarked `export …_proxy=` / `$env:…_proxy =` lines that versions ≤ 0.5 wrote. Other lines — including your own `NO_PROXY` — are kept.
 - The default `no_proxy` (`localhost,127.0.0.1,::1`) is not written if the file already defines `no_proxy` / `NO_PROXY`.
 - On Windows the block goes into Windows PowerShell's profile (`Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`, following a OneDrive-redirected Documents folder) and, when `Documents\PowerShell` already exists, into PowerShell 7's profile too.
-- Values are shell-quoted (PowerShell-quoted on Windows). A proxy URL, PAC URL or `NoProxy` entry cannot inject commands. `NoProxy` may only contain host-name characters, `*`, `/`, `:`, `,`, `;`, `[]`, `<>`, `%` and spaces; proxy and PAC URLs may not contain whitespace or control characters.
+- Values are shell-quoted (PowerShell-quoted on Windows). A proxy URL, PAC URL or `NoProxy` entry cannot inject commands. `NoProxy` may only contain host-name characters (letters and digits of any script, so internationalised names work), `*`, `/`, `:`, `,`, `;`, `[]`, `<>`, `%` and spaces; proxy and PAC URLs may not contain whitespace or control characters.
 
 ## API
 
@@ -142,6 +142,8 @@ err := sysproxy.SetMulti(sysproxy.ProxyConfig{
 ```
 
 `SetMultiContext` is also available when you want the same API with cancellation support.
+
+Fields left empty are not changed, on every OS: a `NoProxy` alone neither switches the manual proxy on nor replaces a PAC URL, and on Windows a single kind keeps the other `http=`/`https=`/`socks=` entries of `ProxyServer`.
 
 ### PAC file
 
@@ -206,7 +208,8 @@ case errors.Is(err, sysproxy.ErrUnsupportedPlatform):
 
 // A failing OS tool (networksetup, gsettings, reg, …) is returned as an error;
 // a missing tool is ErrToolMissing. Only optional steps are non-critical:
-// /etc/environment without root, or Windows Credential Manager.
+// /etc/environment without root, a Windows Credential Manager entry that is not
+// ours, or the settings landing in root's account when run through sudo.
 if err := sysproxy.Set(url, sysproxy.ScopeGlobal); err != nil {
     if sysproxy.RequiresElevation(err) {
         log.Println("sudo required for system-wide effect; per-desktop settings still applied")
@@ -270,6 +273,7 @@ go install github.com/mar0ls/go-sysproxy/cmd/sysproxy@latest
 ```sh
 sysproxy set http://127.0.0.1:8080
 sysproxy set http://user:pass@proxy.corp.com:8080 --scope global
+echo "$PROXY_URL" | sysproxy set -        # URL from stdin: the password stays out of `ps` and the shell history
 sysproxy get
 sysproxy get --json
 sysproxy unset
@@ -279,6 +283,8 @@ sysproxy version
 ```
 
 Exit codes: `0` success · `1` error · `2` proxy not set (only `get`).
+
+A URL of `-` (`set`, `pac`, `check`) is read from the first line of standard input. An argument is visible to every local user in the process list and is kept in the shell history; stdin is not. The CLI never prints a password: `set`, `pac`, `check` and `get` show `user:xxxxx@host`.
 
 - A *non-critical* failure (for example `/etc/environment` not writable without root, after the desktop settings were applied) is a warning, not an error: `set`, `unset` and `pac` exit `0`, print `warning: …` to stderr and, with `--json`, add `"warning"` (and `"requires_elevation": true` when root would have helped) to the output.
 - `get` exits `2` only for "no proxy". A real failure (missing tool, unreadable settings) exits `1`, and `get --json` reports it as `{"ok": false, "error": …}`. When only a PAC URL is active, `get --json` prints it (exit `0`); plain `get` has no manual proxy to print, exits `2` and names the PAC URL on stderr.
@@ -355,9 +361,11 @@ The table below compares `go-sysproxy` with other Go proxy-management libraries 
 
 ## Security
 
-- **Command allowlist** — `exec.Command` is restricted to a fixed set of permitted binaries. No user-supplied input reaches the shell.
+- **System tools** — `networksetup`, `route`, `gsettings`, `kwriteconfig6/5`, `kreadconfig6/5` and `reg` are run from the system directories (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`; the Windows system directory), not through `PATH`. Only a process without root rights falls back to `PATH` (Homebrew, Nix); a root process reports `ErrToolMissing` instead, so a writable `PATH` entry cannot run code as root. `git` and `npm` (`WriteAppConfig`) are your own tools and are found through `PATH`. No user-supplied input reaches a shell.
 - **Config files** — new files are created with mode `0600`; existing files keep their mode. Writes are atomic (temporary file + rename), and shell/PowerShell values are quoted, so URL, PAC and `NoProxy` input cannot inject commands.
-- **Secrets in logs and output** — the password in a proxy URL is masked (`user:***@host`) in `SetLogger` messages, error messages and CLI output. Note that the password is still passed to `networksetup`/`git`/`npm` on their command lines, where other local users can briefly see it, and is stored in plain text by `ScopeUser` (`0600`), `WriteAppConfig` and the tools those write for.
+- **Secrets in logs and output** — the password in a proxy URL is masked (`user:***@host`) in `SetLogger` messages and error messages, and shown as `user:xxxxx@host` by the CLI. Pass a URL with a password to the CLI through stdin (`sysproxy set -`). Note that the password is still passed to `networksetup`/`git`/`npm` on their command lines, where other local users can briefly see it, and is stored in plain text by `ScopeUser` (`0600`), `WriteAppConfig` and the tools those write for.
+- **Process environment** — `Set`, `SetPAC` and `SetMulti` also export the proxy variables (password included) into the *current process's* environment, whatever the scope, so child processes your program starts inherit them. `Unset` clears them again and `WithProxy` restores them.
+- **Running through `sudo`** — `gsettings`/KDE settings, rc files and tool configs written by root belong to root's account, not to the user who typed `sudo`. When that happens the call returns a non-critical warning naming `SUDO_USER` (`IsNonCritical(err)` is true, the CLI exits `0` with `warning: …`); a file root creates inside a user's directory gets that directory's owner. Run without `sudo` to change your own settings.
 - **Static analysis** — code is checked with [golangci-lint](https://golangci-lint.run) (including `gosec`, `errcheck`, `staticcheck`) on every push.
 
 ## License

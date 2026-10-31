@@ -664,3 +664,39 @@ func TestWriteWgetRCReadError(t *testing.T) {
 		t.Fatal("expected error reading unreadable .wgetrc")
 	}
 }
+
+// A config file with a very long line (an inlined certificate, a long proxy
+// list) used to make Set and Clear fail for good with bufio.ErrTooLong.
+func TestReadLines_LongLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pip.conf")
+	long := strings.Repeat("x", 200<<10)
+	if err := os.WriteFile(path, []byte("[global]\nindex-url = "+long+"\nproxy = old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := readLines(path)
+	if err != nil {
+		t.Fatalf("readLines: %v", err)
+	}
+	if len(lines) != 3 || len(lines[1]) != len("index-url = ")+len(long) {
+		t.Errorf("got %d lines, second has %d bytes", len(lines), len(lines[1]))
+	}
+}
+
+func TestWriteCurlRC_FileWithLongLine(t *testing.T) {
+	home := setTestHome(t)
+	path := filepath.Join(home, ".curlrc")
+	long := "# " + strings.Repeat("y", 100<<10) + "\n"
+	if err := os.WriteFile(path, []byte(long), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteAppConfig(AppCurl, "http://proxy.example.com:8080"); err != nil {
+		t.Fatalf("WriteAppConfig: %v", err)
+	}
+	b, _ := os.ReadFile(path) //nolint:gosec // test path
+	if !strings.Contains(string(b), "proxy.example.com") || !strings.Contains(string(b), strings.Repeat("y", 100<<10)) {
+		t.Error("the long comment was lost or the proxy was not written")
+	}
+	if err := ClearAppConfig(AppCurl); err != nil {
+		t.Fatalf("ClearAppConfig: %v", err)
+	}
+}

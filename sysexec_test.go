@@ -155,3 +155,26 @@ func TestPlatformToolDirs_AreAbsoluteAndSystemOwned(t *testing.T) {
 		}
 	}
 }
+
+// With the real system directories a privileged process still finds the basic
+// system tools; otherwise running the CLI as root would fail for every tool.
+func TestLookSystemTool_RealSystemDirectoriesServeRoot(t *testing.T) {
+	skipOnWindows(t)
+	orig := privileged
+	privileged = func() bool { return true }
+	t.Cleanup(func() { privileged = orig })
+
+	got, err := lookSystemTool("sh")
+	if err != nil {
+		t.Fatalf("lookSystemTool(sh) as root: %v", err)
+	}
+	inSystemDir := false
+	for _, d := range platformToolDirs() {
+		if filepath.Dir(got) == d {
+			inSystemDir = true
+		}
+	}
+	if !inSystemDir {
+		t.Errorf("sh resolved to %q, outside %v", got, platformToolDirs())
+	}
+}
