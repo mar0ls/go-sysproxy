@@ -3,93 +3,146 @@
 package sysproxy
 
 import (
+	"errors"
+	"fmt"
 	"os"
-	"strings"
+	"path/filepath"
+	"runtime"
 )
 
 var unixRCFiles = []string{".bashrc", ".zshrc", ".profile", ".bash_profile"}
 
-// setUser appends proxy env-var exports to all common Unix shell rc files.
-func setUser(proxyURL string) error {
-	return appendToRCFiles(
-		"export http_proxy='"+proxyURL+"'",
-		"export HTTP_PROXY='"+proxyURL+"'",
-		"export https_proxy='"+proxyURL+"'",
-		"export HTTPS_PROXY='"+proxyURL+"'",
-		"export all_proxy='"+proxyURL+"'",
-		"export ALL_PROXY='"+proxyURL+"'",
-		"export no_proxy='localhost,127.0.0.1,::1'",
-		"export NO_PROXY='localhost,127.0.0.1,::1'",
-	)
+func exportLines(pairs []envPair) []string {
+	lines := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		lines = append(lines, "export "+p.name+"="+shellQuote(p.value))
+	}
+	return lines
 }
 
-// unsetUser removes proxy env-var exports from all common Unix shell rc files.
+// setUser writes proxy env-var exports for proxyURL into the shell rc files.
+func setUser(proxyURL string) error {
+	return applyRCBlock(exportLines([]envPair{
+		{"http_proxy", proxyURL},
+		{"HTTP_PROXY", proxyURL},
+		{"https_proxy", proxyURL},
+		{"HTTPS_PROXY", proxyURL},
+		{"all_proxy", proxyURL},
+		{"ALL_PROXY", proxyURL},
+		{"no_proxy", defaultNoProxy},
+		{"NO_PROXY", defaultNoProxy},
+	}), false, noProxyNames...)
+}
+
+// unsetUser removes the go-sysproxy block (and unmarked lines written by
+// versions <= 0.5) from the shell rc files. Other lines are never touched.
 func unsetUser() error {
-	return removeProxyFromRCFiles()
+	return removeRCBlock()
 }
 
 func setUserPAC(pacURL string) error {
-	return appendToRCFiles("export AUTOPROXY='" + pacURL + "'")
+	return applyRCBlock(exportLines([]envPair{{"AUTOPROXY", pacURL}}), false)
 }
 
 func setUserMulti(cfg ProxyConfig) error {
-	var lines []string
+	var pairs []envPair
 	if cfg.HTTP != "" {
-		lines = append(lines, "export http_proxy='"+cfg.HTTP+"'", "export HTTP_PROXY='"+cfg.HTTP+"'")
+		pairs = append(pairs, envPair{"http_proxy", cfg.HTTP}, envPair{"HTTP_PROXY", cfg.HTTP})
 	}
 	if cfg.HTTPS != "" {
-		lines = append(lines, "export https_proxy='"+cfg.HTTPS+"'", "export HTTPS_PROXY='"+cfg.HTTPS+"'")
+		pairs = append(pairs, envPair{"https_proxy", cfg.HTTPS}, envPair{"HTTPS_PROXY", cfg.HTTPS})
 	}
 	if cfg.SOCKS != "" {
-		lines = append(lines, "export all_proxy='"+cfg.SOCKS+"'", "export ALL_PROXY='"+cfg.SOCKS+"'")
+		pairs = append(pairs, envPair{"all_proxy", cfg.SOCKS}, envPair{"ALL_PROXY", cfg.SOCKS})
 	}
 	if cfg.NoProxy != "" {
-		lines = append(lines, "export no_proxy='"+cfg.NoProxy+"'", "export NO_PROXY='"+cfg.NoProxy+"'")
+		pairs = append(pairs, envPair{"no_proxy", cfg.NoProxy}, envPair{"NO_PROXY", cfg.NoProxy})
 	}
-	return appendToRCFiles(lines...)
+	if len(pairs) == 0 {
+		return nil
+	}
+	return applyRCBlock(exportLines(pairs), true)
 }
 
-func appendToRCFiles(lines ...string) error {
+// rcTargets returns the rc files to edit: those that already exist. Creating a
+// file the user does not have can change shell behaviour — a new
+// ~/.bash_profile, for instance, makes bash login shells stop reading
+// ~/.profile — so a file is only created when none exists, and then only the
+// one matching the user's shell.
+func rcTargets(home string) []string {
+	var targets []string
+	for _, rc := range unixRCFiles {
+		path := filepath.Join(home, rc)
+		if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
+			targets = append(targets, path)
+		}
+	}
+	if len(targets) == 0 {
+		targets = append(targets, filepath.Join(home, defaultRCFile()))
+	}
+	return targets
+}
+
+func defaultRCFile() string {
+	switch filepath.Base(os.Getenv("SHELL")) {
+	case "zsh":
+		return ".zshrc"
+	case "bash":
+		return ".bashrc"
+	}
+	if runtime.GOOS == "darwin" {
+		return ".zshrc"
+	}
+	return ".profile"
+}
+
+// applyRCBlock writes body into every target rc file. It fails only when no
+// file could be written; partial failures are logged.
+func applyRCBlock(body []string, merge bool, yield ...string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	for _, rc := range unixRCFiles {
-		path := home + "/" + rc
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec
-		if err != nil {
+	var errs []error
+	written := 0
+	for _, path := range rcTargets(home) {
+		if err := applyBlockFile(path, body, merge, yield...); err != nil {
+			logf("rcfile_unix: %s: %v", path, err)
+			errs = append(errs, fmt.Errorf("sysproxy: %w", err))
 			continue
 		}
-		for _, l := range lines {
-			_, _ = f.WriteString(l + "\n")
-		}
-		if err := f.Close(); err != nil {
-			logf("rcfile_unix: close error: %v", err)
-		}
+		written++
+	}
+	if written == 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
 
-func removeProxyFromRCFiles() error {
+func removeRCBlock() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, rc := range unixRCFiles {
-		path := home + "/" + rc
-		data, err := os.ReadFile(path) //nolint:gosec
-		if err != nil {
-			continue
+		if err := removeBlockFile(filepath.Join(home, rc)); err != nil {
+			errs = append(errs, fmt.Errorf("sysproxy: %w", err))
 		}
-		var kept []string
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.Contains(line, "_proxy=") || strings.Contains(line, "_PROXY=") ||
-				strings.Contains(line, "AUTOPROXY=") {
-				continue
-			}
-			kept = append(kept, line)
-		}
-		_ = os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o600) //nolint:gosec,nolintlint
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// snapshotUser records the managed block of every rc file that setUser,
+// setUserPAC or setUserMulti would write, for WithProxy to restore.
+func snapshotUser() (func() error, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	snaps, err := snapshotBlockFiles(rcTargets(home))
+	if err != nil {
+		return nil, err
+	}
+	return func() error { return restoreBlockFiles(snaps) }, nil
 }

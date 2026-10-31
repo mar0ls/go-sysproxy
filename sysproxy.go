@@ -18,7 +18,9 @@ package sysproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 )
 
 // ProxyScope defines the lifetime and reach of a proxy setting.
@@ -84,17 +86,17 @@ func SetContext(ctx context.Context, proxyURL string, scope ProxyScope) error {
 	switch scope {
 	case ScopeShell:
 		setEnvVars(proxyURL)
-		logf("set proxy scope=shell url=%s", proxyURL)
+		logf("set proxy scope=shell url=%s", redactURL(proxyURL))
 		return nil
 	case ScopeUser:
 		setEnvVars(proxyURL)
 		err = setUser(proxyURL)
-		logf("set proxy scope=user url=%s err=%v", proxyURL, err)
+		logf("set proxy scope=user url=%s err=%v", redactURL(proxyURL), err)
 		return err
 	case ScopeGlobal:
 		setEnvVars(proxyURL)
 		err = activeBackend.SetGlobal(ctx, p)
-		logf("set proxy scope=global url=%s err=%v", proxyURL, err)
+		logf("set proxy scope=global url=%s err=%v", redactURL(proxyURL), err)
 		return err
 	default:
 		return fmt.Errorf("sysproxy: invalid scope %d", scope)
@@ -181,6 +183,9 @@ func SetMultiContext(ctx context.Context, cfg ProxyConfig, scope ProxyScope) err
 			}
 		}
 	}
+	if err := validateNoProxy(cfg.NoProxy); err != nil {
+		return err
+	}
 	ctx = normalizeContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -231,74 +236,101 @@ func SetPACContext(ctx context.Context, pacURL string, scope ProxyScope) error {
 	}
 }
 
-// WithProxy temporarily sets the proxy for the duration of fn, then restores
-// the previous proxy state (or clears it if no proxy was set before).
-// The restore snapshot covers the full ProxyConfig — HTTP, HTTPS, SOCKS,
-// NoProxy, and PAC — not just the HTTP field.
+// WithProxy temporarily sets the proxy for the duration of fn, then puts the
+// previous state back exactly: for ScopeGlobal every setting the OS stores
+// (including fields that were empty), for ScopeUser the go-sysproxy block of
+// the rc files / PowerShell profile, and for every scope the proxy environment
+// variables of the process.
+//
+// If the previous state cannot be read, WithProxy returns an error before
+// changing anything. If restoring fails, the error is returned (joined with
+// fn's error, if any). Credentials of a previously configured authenticated
+// proxy cannot be read back and are not restored.
 //
 //	err := sysproxy.WithProxy(ctx, "socks5://proxy:1080", sysproxy.ScopeGlobal, func(ctx context.Context) error {
 //	    return doRequest(ctx)
 //	})
 func WithProxy(ctx context.Context, proxyURL string, scope ProxyScope, fn func(context.Context) error) error {
-	ctx = normalizeContext(ctx)
-	snapshot, hadSnapshot := snapshotForRestore(scope)
-
-	if err := SetContext(ctx, proxyURL, scope); err != nil && !IsNonCritical(err) {
+	if err := validateProxyURL(proxyURL); err != nil {
 		return err
 	}
-	defer restoreSnapshot(scope, snapshot, hadSnapshot)
-	return fn(ctx)
+	return withState(ctx, scope, fn, func(ctx context.Context) error {
+		return SetContext(ctx, proxyURL, scope)
+	})
 }
 
 // WithProxyMulti is the multi-protocol variant of WithProxy: it applies cfg
-// via SetMulti and restores the previous full configuration on return.
+// via SetMulti and restores the previous state on return.
 func WithProxyMulti(ctx context.Context, cfg ProxyConfig, scope ProxyScope, fn func(context.Context) error) error {
-	ctx = normalizeContext(ctx)
-	snapshot, hadSnapshot := snapshotForRestore(scope)
+	return withState(ctx, scope, fn, func(ctx context.Context) error {
+		return SetMultiContext(ctx, cfg, scope)
+	})
+}
 
-	if err := SetMultiContext(ctx, cfg, scope); err != nil && !IsNonCritical(err) {
+// restoreTimeout bounds the restore step, which runs even when the caller's
+// context is already canceled.
+const restoreTimeout = 60 * time.Second
+
+// withState snapshots the state apply is going to change, runs apply and fn,
+// and restores the snapshot on the way out — also when apply fails half way
+// or fn panics. Non-critical apply errors (e.g. /etc/environment not
+// writable) do not stop fn.
+func withState(ctx context.Context, scope ProxyScope, fn func(context.Context) error, apply func(context.Context) error) (err error) {
+	ctx = normalizeContext(ctx)
+	if scope < ScopeShell || scope > ScopeGlobal {
+		return fmt.Errorf("sysproxy: invalid scope %d", scope)
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	defer restoreSnapshot(scope, snapshot, hadSnapshot)
+	restore, err := snapshotState(ctx, scope)
+	if err != nil {
+		return fmt.Errorf("sysproxy: cannot save the current proxy state, nothing was changed: %w", err)
+	}
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
+		defer cancel()
+		if rerr := restore(rctx); rerr != nil {
+			logf("WithProxy: restore failed: %v", rerr)
+			err = combine(err, fmt.Errorf("sysproxy: restoring the previous proxy state failed: %w", rerr))
+		}
+	}()
+
+	if aerr := apply(ctx); aerr != nil && !IsNonCritical(aerr) {
+		return aerr
+	}
 	return fn(ctx)
 }
 
-// snapshotForRestore reads the current global config so WithProxy* can undo
-// its change. ScopeShell/ScopeUser have no read-back path, so the caller
-// restores by Unset.
-func snapshotForRestore(scope ProxyScope) (ProxyConfig, bool) {
-	if scope != ScopeGlobal {
-		return ProxyConfig{}, false
-	}
-	cfg, err := GetConfig()
-	if err != nil {
-		return ProxyConfig{}, false
-	}
-	return cfg, true
-}
+// snapshotState captures what Set* of the given scope can change and returns
+// the function that puts it back.
+func snapshotState(ctx context.Context, scope ProxyScope) (func(context.Context) error, error) {
+	env := snapshotEnv()
+	var parts []func(context.Context) error
 
-// restoreSnapshot re-applies snap after WithProxy / WithProxyMulti finishes.
-// Restore errors are logged and swallowed so they do not shadow fn's error.
-func restoreSnapshot(scope ProxyScope, snap ProxyConfig, had bool) {
-	if !had {
-		if err := Unset(scope); err != nil && !IsNonCritical(err) {
-			logf("WithProxy: restore Unset failed: %v", err)
+	switch scope {
+	case ScopeUser:
+		restoreUser, err := snapshotUser()
+		if err != nil {
+			return nil, err
 		}
-		return
-	}
-	if snap.PAC != "" {
-		if err := SetPAC(snap.PAC, scope); err != nil && !IsNonCritical(err) {
-			logf("WithProxy: restore SetPAC failed: %v", err)
+		parts = append(parts, func(context.Context) error { return restoreUser() })
+	case ScopeGlobal:
+		restoreGlobal, err := activeBackend.SnapshotGlobal(ctx)
+		if err != nil {
+			return nil, err
 		}
-		return
+		parts = append(parts, restoreGlobal)
 	}
-	if snap.HTTP == "" && snap.HTTPS == "" && snap.SOCKS == "" {
-		if err := Unset(scope); err != nil && !IsNonCritical(err) {
-			logf("WithProxy: restore Unset failed: %v", err)
+	parts = append(parts, func(context.Context) error { return env.restore() })
+
+	return func(ctx context.Context) error {
+		var errs []error
+		for _, restore := range parts {
+			if err := restore(ctx); err != nil {
+				errs = append(errs, err)
+			}
 		}
-		return
-	}
-	if err := SetMulti(snap, scope); err != nil && !IsNonCritical(err) {
-		logf("WithProxy: restore SetMulti failed: %v", err)
-	}
+		return errors.Join(errs...)
+	}, nil
 }

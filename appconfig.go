@@ -57,7 +57,7 @@ func WriteAppConfigContext(ctx context.Context, app AppName, proxyURL string) er
 	default:
 		return fmt.Errorf("sysproxy: unsupported app %q", app)
 	}
-	logf("WriteAppConfig app=%s url=%s err=%v", app, proxyURL, err)
+	logf("WriteAppConfig app=%s url=%s err=%v", app, redactURL(proxyURL), err)
 	return err
 }
 
@@ -229,6 +229,9 @@ func userConfigFile(name string) (string, error) {
 // editKeyValueFile sets key=value in a simple key<sep>value file, replacing any
 // existing line with the same key and appending if absent.
 func editKeyValueFile(path, key, value, sep string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
 	lines, err := readLines(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -249,6 +252,9 @@ func editKeyValueFile(path, key, value, sep string) error {
 
 // removeKeysFromFile removes all lines whose key (before sep) matches any of keys.
 func removeKeysFromFile(path, sep string, keys ...string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
 	lines, err := readLines(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -272,6 +278,9 @@ func removeKeysFromFile(path, sep string, keys ...string) error {
 
 // editINIFile sets [section] key = value in an INI-style file.
 func editINIFile(path, section, key, value string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
 	lines, err := readLines(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -313,6 +322,9 @@ func editINIFile(path, section, key, value string) error {
 
 // removeINIKey removes key from [section] in an INI file.
 func removeINIKey(path, section, key string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
 	lines, err := readLines(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -364,5 +376,5 @@ func writeLines(path string, lines []string) error {
 	if len(lines) > 0 {
 		content += "\n"
 	}
-	return os.WriteFile(path, []byte(content), 0o600)
+	return writeFileAtomic(path, []byte(content), 0o600)
 }

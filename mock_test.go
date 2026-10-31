@@ -14,6 +14,7 @@ type mockBackend struct {
 	getGlobalConfigFn func(ctx context.Context) (ProxyConfig, error)
 	setGlobalPACFn    func(ctx context.Context, pacURL string) error
 	setGlobalMultiFn  func(ctx context.Context, cfg ProxyConfig) error
+	snapshotGlobalFn  func(ctx context.Context) (restoreFunc, error)
 }
 
 func (m *mockBackend) SetGlobal(ctx context.Context, p *proxy) error {
@@ -56,6 +57,13 @@ func (m *mockBackend) SetGlobalMulti(ctx context.Context, cfg ProxyConfig) error
 		return m.setGlobalMultiFn(ctx, cfg)
 	}
 	return nil
+}
+
+func (m *mockBackend) SnapshotGlobal(ctx context.Context) (restoreFunc, error) {
+	if m.snapshotGlobalFn != nil {
+		return m.snapshotGlobalFn(ctx)
+	}
+	return noRestore, nil
 }
 
 // useMockBackend replaces activeBackend for the duration of test t and

@@ -3,3 +3,5 @@ coverage.out
 dist/
 scripts/smoke/*
 VM_SMOKE*
+.cache/
+REVIEW_*

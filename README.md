@@ -69,6 +69,24 @@ func main() {
 | `ScopeUser` | Persisted for the user — rc files on Unix, PowerShell profile on Windows |
 | `ScopeGlobal` | System-wide — `networksetup`, `gsettings`, registry |
 
+### How `ScopeUser` edits your files
+
+Everything go-sysproxy writes goes between two marker lines, and nothing outside them is ever modified:
+
+```sh
+# >>> go-sysproxy >>>
+export http_proxy='http://proxy.example.com:8080'
+…
+# <<< go-sysproxy <<<
+```
+
+- `Set` / `SetPAC` replace the block; `SetMulti` updates only the variables it is given. Repeating a call never adds lines.
+- Only rc files that already exist are edited (`~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.bash_profile`). If none exists, one is created for your `$SHELL` (`~/.zshrc` on macOS). go-sysproxy never creates `~/.bash_profile` next to an existing `~/.profile`, because that would stop bash login shells from reading `~/.profile`.
+- Files are replaced atomically; mode, owner and symlinks (dotfile managers) are preserved.
+- `Unset` removes the block, plus the unmarked `export …_proxy=` / `$env:…_proxy =` lines that versions ≤ 0.5 wrote. Other lines — including your own `NO_PROXY` — are kept.
+- The default `no_proxy` (`localhost,127.0.0.1,::1`) is not written if the file already defines `no_proxy` / `NO_PROXY`.
+- Values are shell-quoted (PowerShell-quoted on Windows). A proxy URL, PAC URL or `NoProxy` entry cannot inject commands. `NoProxy` may only contain host-name characters, `*`, `/`, `:`, `,`, `;`, `[]`, `<>`, `%` and spaces; proxy and PAC URLs may not contain whitespace or control characters.
+
 ## API
 
 ### Set / Unset / Get
@@ -77,8 +95,10 @@ func main() {
 err := sysproxy.Set("http://user:pass@proxy.example.com:8080", sysproxy.ScopeGlobal)
 err  = sysproxy.Unset(sysproxy.ScopeGlobal)
 
-url, err := sysproxy.Get() // reads current system proxy (HTTP field)
+url, err := sysproxy.Get() // current system proxy: the HTTP field, else HTTPS, else SOCKS
 ```
+
+**The URL scheme decides where the proxy goes.** `http://` and `https://` fill the HTTP and HTTPS fields; `socks5://` (also `socks5h`, `socks4`, `socks4a`, `socks`) fills the SOCKS field only. The fields the scheme does not use are cleared, so a `Set` always replaces the previous one instead of mixing with it. A URL without a port gets the default of its scheme (`http` 80, `https` 443, SOCKS 1080), the same as `Check`. IPv6 literals work (`http://[::1]:3128`). `https://` means "the proxy is reached over TLS" in a URL, but the system settings cannot express that, so it is stored like `http://`.
 
 The plain wrappers exist for convenience. Use the context-aware variants for cancellation and deadlines:
 
@@ -134,7 +154,15 @@ Note: `SetPAC` switches the OS into auto-proxy (PAC) mode. In that mode,
 
 ### Temporary proxy
 
-`WithProxy` sets the proxy for the duration of `fn` and restores the previous state on return — even if `fn` returns an error. The snapshot covers the full `ProxyConfig` (HTTP + HTTPS + SOCKS + NoProxy + PAC), not just the HTTP field.
+`WithProxy` sets the proxy for the duration of `fn` and puts the previous state back on return — even if `fn` fails or panics, and even if `ctx` was canceled meanwhile. The restore is exact, not a re-`Set`:
+
+| Scope | What is saved and restored |
+|---|---|
+| `ScopeGlobal` | every setting the OS stores for it, including fields that were empty: **macOS** per network service (manual proxies with their on/off state, PAC, bypass list); **Linux** the GNOME and KDE keys and `/etc/environment`; **Windows** the `ProxyEnable` / `ProxyServer` / `ProxyOverride` / `AutoConfigURL` values |
+| `ScopeUser` | the go-sysproxy block of the rc files / PowerShell profile (your own lines are never touched; a file the call created is removed again) |
+| every scope | the proxy environment variables of the process (`HTTP_PROXY`, `NO_PROXY`, … — unset stays unset) |
+
+If the previous state cannot be read, `WithProxy` returns an error **before** changing anything. If restoring fails, that error is returned too (joined with `fn`'s error). The password of a previously configured *authenticated* proxy cannot be read back from the OS and is not restored.
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -173,7 +201,9 @@ case errors.Is(err, sysproxy.ErrUnsupportedPlatform):
     // this GOOS has no sysproxy backend compiled in
 }
 
-// non-critical failures (e.g. /etc/environment without root):
+// A failing OS tool (networksetup, gsettings, reg, …) is returned as an error;
+// a missing tool is ErrToolMissing. Only optional steps are non-critical:
+// /etc/environment without root, or Windows Credential Manager.
 if err := sysproxy.Set(url, sysproxy.ScopeGlobal); err != nil {
     if sysproxy.RequiresElevation(err) {
         log.Println("sudo required for system-wide effect; per-desktop settings still applied")
@@ -247,6 +277,9 @@ sysproxy version
 
 Exit codes: `0` success · `1` error · `2` proxy not set (only `get`).
 
+- A *non-critical* failure (for example `/etc/environment` not writable without root, after the desktop settings were applied) is a warning, not an error: `set`, `unset` and `pac` exit `0`, print `warning: …` to stderr and, with `--json`, add `"warning"` (and `"requires_elevation": true` when root would have helped) to the output.
+- `get` exits `2` only for "no proxy". A real failure (missing tool, unreadable settings) exits `1`, and `get --json` reports it as `{"ok": false, "error": …}`. When only a PAC URL is active, `get --json` prints it (exit `0`); plain `get` has no manual proxy to print, exits `2` and names the PAC URL on stderr.
+
 ## Real-world example — residential proxy
 
 The URL format works with any standard HTTP/SOCKS5 proxy provider:
@@ -290,7 +323,11 @@ _ = sysproxy.WriteAppConfig(sysproxy.AppCurl, "http://username:password@proxy.pr
 | ScopeUser (rc files) | ✓ | ✓ | ✓ | ✓ |
 | Credential Manager | — | — | — | ✓ |
 
-> **Linux:** `ScopeGlobal` writes `/etc/environment` (requires root) and calls `gsettings` **and** `kwriteconfig5` if available, so hybrid GNOME/KDE setups are covered without desktop detection. Failure to write `/etc/environment` is returned as a non-critical error — use `sysproxy.IsNonCritical(err)` to distinguish it from a hard failure.
+> **Linux:** `ScopeGlobal` writes `/etc/environment` (requires root) and calls `gsettings` **and** `kwriteconfig6` / `kwriteconfig5` if available (Plasma 6 is preferred, both read the same `kioslaverc`), so hybrid GNOME/KDE setups are covered without desktop detection. Failure to write `/etc/environment` is returned as a non-critical error — use `sysproxy.IsNonCritical(err)` to distinguish it from a hard failure.
+>
+> `gsettings set` exits 0 even when no D-Bus session bus / dconf service is reachable (plain `ssh` or `sudo`), in which case it stores nothing. go-sysproxy reads the value back and returns a hard error if it was not stored, so run it from the desktop session.
+>
+> `/etc/environment` is world-readable, so **credentials in the proxy URL are not written there**: the file gets the URL without `user:pass@`, and `Set` returns a non-critical error to tell you. Your own `NO_PROXY` in that file is left alone.
 
 ## Comparison with alternatives
 
@@ -300,7 +337,7 @@ The table below compares `go-sysproxy` with other Go proxy-management libraries 
 |---|:---:|:---:|
 | macOS (`networksetup`) | ✓ | ✓ |
 | Linux GNOME (`gsettings`) | ✓ | ✓ |
-| Linux KDE (`kwriteconfig5`) | ✓ | — |
+| Linux KDE (`kwriteconfig6` / `kwriteconfig5`) | ✓ | — |
 | Windows (registry + `cmdkey`) | ✓ | ✓ |
 | `Get` / `GetConfig` per protocol | ✓ | partial |
 | `SetMulti` (HTTP/HTTPS/SOCKS + NoProxy) | ✓ | — |
@@ -316,7 +353,8 @@ The table below compares `go-sysproxy` with other Go proxy-management libraries 
 ## Security
 
 - **Command allowlist** — `exec.Command` is restricted to a fixed set of permitted binaries. No user-supplied input reaches the shell.
-- **Config files** — written with mode `0600`.
+- **Config files** — new files are created with mode `0600`; existing files keep their mode. Writes are atomic (temporary file + rename), and shell/PowerShell values are quoted, so URL, PAC and `NoProxy` input cannot inject commands.
+- **Secrets in logs and output** — the password in a proxy URL is masked (`user:***@host`) in `SetLogger` messages, error messages and CLI output. Note that the password is still passed to `networksetup`/`cmdkey`/`git`/`npm` on their command lines, where other local users can briefly see it, and is stored in plain text by `ScopeUser` (`0600`), `WriteAppConfig` and the tools those write for.
 - **Static analysis** — code is checked with [golangci-lint](https://golangci-lint.run) (including `gosec`, `errcheck`, `staticcheck`) on every push.
 
 ## License

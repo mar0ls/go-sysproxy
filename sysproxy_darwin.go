@@ -4,37 +4,98 @@ package sysproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"os/exec"
+	"reflect"
 	"strings"
 )
 
-func runNetworkSetup(ctx context.Context, args ...string) error {
-	return exec.CommandContext(normalizeContext(ctx), "networksetup", args...).Run() //nolint:gosec
+// networksetupRun and networksetupOutput are the only places that exec
+// networksetup; tests replace them to record calls and fake output.
+var (
+	networksetupRun = func(ctx context.Context, args ...string) error {
+		out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", args...).CombinedOutput() //nolint:gosec
+		return execError("networksetup", nsWhat(args), err, out)
+	}
+	networksetupOutput = func(ctx context.Context, args ...string) ([]byte, error) {
+		out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", args...).Output() //nolint:gosec
+		return out, execError("networksetup", nsWhat(args), err, out)
+	}
+)
+
+// nsWhat describes a networksetup call for an error message: the flag and the
+// network service, never the remaining arguments (they may hold a password).
+func nsWhat(args []string) string {
+	switch len(args) {
+	case 0:
+		return ""
+	case 1:
+		return args[0]
+	default:
+		return fmt.Sprintf("%s %q", args[0], args[1])
+	}
 }
+
+func runNetworkSetup(ctx context.Context, args ...string) error {
+	return networksetupRun(ctx, args...)
+}
+
+// nsBatch runs networksetup commands and collects the failures: run records
+// them, try only logs (for cosmetic steps whose failure does not change the
+// effective proxy state).
+type nsBatch struct {
+	ctx  context.Context
+	errs []error
+}
+
+func (b *nsBatch) run(args ...string) {
+	if err := runNetworkSetup(b.ctx, args...); err != nil {
+		b.errs = append(b.errs, err)
+	}
+}
+
+func (b *nsBatch) try(args ...string) {
+	if err := runNetworkSetup(b.ctx, args...); err != nil {
+		logf("darwin: ignored: %v", err)
+	}
+}
+
+func (b *nsBatch) err() error { return errors.Join(b.errs...) }
 
 func setGlobal(ctx context.Context, p *proxy) error {
 	services, err := macOSNetworkServices(ctx)
 	if err != nil {
 		return err
 	}
+	// The scheme decides the field: a SOCKS proxy goes to the SOCKS firewall
+	// proxy, an HTTP one to web + secure web. The other kind is switched off so
+	// the result is exactly what was asked for, not a mix with an earlier Set.
+	httpKinds, socksKinds := nsProxyKinds[:2], nsProxyKinds[2:]
+	use, drop := httpKinds, socksKinds
+	if p.isSOCKS() {
+		use, drop = socksKinds, httpKinds
+	}
+	b := &nsBatch{ctx: ctx}
 	for _, svc := range services {
 		// Ensure manual proxy mode is authoritative and PAC does not stay active.
-		_ = runNetworkSetup(ctx, "-setautoproxystate", svc, "off")
-		if p.user != "" {
-			_ = runNetworkSetup(ctx, "-setwebproxy", svc, p.host, p.port, "on", p.user, p.pass)
-			_ = runNetworkSetup(ctx, "-setsecurewebproxy", svc, p.host, p.port, "on", p.user, p.pass)
-			_ = runNetworkSetup(ctx, "-setsocksfirewallproxy", svc, p.host, p.port, "on", p.user, p.pass)
-		} else {
-			_ = runNetworkSetup(ctx, "-setwebproxy", svc, p.host, p.port)
-			_ = runNetworkSetup(ctx, "-setsecurewebproxy", svc, p.host, p.port)
-			_ = runNetworkSetup(ctx, "-setsocksfirewallproxy", svc, p.host, p.port)
+		b.run("-setautoproxystate", svc, "off")
+		for _, k := range use {
+			if p.user != "" {
+				b.run(k.set, svc, p.host, p.port, "on", p.user, p.pass)
+			} else {
+				// "off" = no authentication; without it a previously configured
+				// authenticated proxy would keep asking for credentials.
+				b.run(k.set, svc, p.host, p.port, "off")
+			}
+			b.run(k.state, svc, "on")
 		}
-		_ = runNetworkSetup(ctx, "-setwebproxystate", svc, "on")
-		_ = runNetworkSetup(ctx, "-setsecurewebproxystate", svc, "on")
-		_ = runNetworkSetup(ctx, "-setsocksfirewallproxystate", svc, "on")
+		for _, k := range drop {
+			b.run(k.state, svc, "off")
+		}
 	}
-	return nil
+	return b.err()
 }
 
 func unsetGlobal(ctx context.Context) error {
@@ -42,18 +103,23 @@ func unsetGlobal(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	b := &nsBatch{ctx: ctx}
 	for _, svc := range services {
-		// Unset should clear both manual and auto-proxy modes.
-		_ = runNetworkSetup(ctx, "-setautoproxystate", svc, "off")
-		_ = runNetworkSetup(ctx, "-setwebproxystate", svc, "off")
-		_ = runNetworkSetup(ctx, "-setsecurewebproxystate", svc, "off")
-		_ = runNetworkSetup(ctx, "-setsocksfirewallproxystate", svc, "off")
-		// Clear host/port so the previous values do not stay visible in System Settings.
-		_ = runNetworkSetup(ctx, "-setwebproxy", svc, "", "0")
-		_ = runNetworkSetup(ctx, "-setsecurewebproxy", svc, "", "0")
-		_ = runNetworkSetup(ctx, "-setsocksfirewallproxy", svc, "", "0")
+		// Clear host/port first so the previous values do not stay visible in
+		// System Settings. The -set*proxy commands switch the proxy ON as a side
+		// effect, so the state must be turned off afterwards — doing it in the
+		// other order leaves an "enabled" proxy with an empty server on every
+		// service. Clearing is cosmetic; turning the state off is what counts.
+		b.try("-setwebproxy", svc, "", "0")
+		b.try("-setsecurewebproxy", svc, "", "0")
+		b.try("-setsocksfirewallproxy", svc, "", "0")
+		// Unset clears both manual and auto-proxy modes.
+		b.run("-setautoproxystate", svc, "off")
+		b.run("-setwebproxystate", svc, "off")
+		b.run("-setsecurewebproxystate", svc, "off")
+		b.run("-setsocksfirewallproxystate", svc, "off")
 	}
-	return nil
+	return b.err()
 }
 
 // parseNSProxyOutput extracts host, port and enabled state from networksetup output.
@@ -73,17 +139,25 @@ func parseNSProxyOutput(output string) (host, port string, enabled bool) {
 
 func getGlobal(ctx context.Context) (string, error) {
 	services, err := macOSNetworkServices(ctx)
-	if err != nil || len(services) == 0 {
-		return "", fmt.Errorf("sysproxy: no network services found")
-	}
-	svc := services[0]
-	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-getwebproxy", svc).Output() //nolint:gosec
 	if err != nil {
 		return "", err
 	}
-	h, p, ok := parseNSProxyOutput(string(out))
-	if ok && h != "" && p != "0" {
-		return "http://" + h + ":" + p, nil
+	svc := services[0]
+	// First enabled kind wins: web, secure web, then SOCKS (so a proxy set from
+	// a socks5:// URL can be read back).
+	for i, k := range nsProxyKinds {
+		out, err := networksetupOutput(ctx, k.get, svc)
+		if err != nil {
+			return "", err
+		}
+		h, p, ok := parseNSProxyOutput(string(out))
+		if ok && h != "" && p != "0" {
+			scheme := "http"
+			if i == 2 {
+				scheme = "socks5"
+			}
+			return scheme + "://" + net.JoinHostPort(h, p), nil
+		}
 	}
 	if pac, ok := readMacPAC(ctx, svc); ok {
 		return pac, nil
@@ -95,19 +169,16 @@ func getGlobal(ctx context.Context) (string, error) {
 // auto-proxy is on. The second return value is false when auto-proxy is off
 // or the URL is empty.
 func readMacPAC(ctx context.Context, svc string) (string, bool) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-getautoproxyurl", svc).Output() //nolint:gosec
+	out, err := networksetupOutput(ctx, "-getautoproxyurl", svc)
 	if err != nil {
 		return "", false
 	}
 	return parseAutoProxyOutput(string(out))
 }
 
-// parseAutoProxyOutput extracts a PAC URL from `networksetup -getautoproxyurl`
-// output. It returns ok=false when auto-proxy is disabled or the URL is a
-// placeholder (empty, "(null)").
-func parseAutoProxyOutput(out string) (string, bool) {
-	var url string
-	var enabled bool
+// parseAutoProxyState extracts the URL and the enabled flag from
+// `networksetup -getautoproxyurl` output. A "(null)" URL counts as empty.
+func parseAutoProxyState(out string) (url string, enabled bool) {
 	for _, line := range strings.Split(out, "\n") {
 		switch {
 		case strings.HasPrefix(line, "URL:"):
@@ -116,16 +187,41 @@ func parseAutoProxyOutput(out string) (string, bool) {
 			enabled = true
 		}
 	}
-	if !enabled || url == "" || url == "(null)" {
+	if url == "(null)" {
+		url = ""
+	}
+	return url, enabled
+}
+
+// parseAutoProxyOutput extracts a PAC URL from `networksetup -getautoproxyurl`
+// output. It returns ok=false when auto-proxy is disabled or the URL is a
+// placeholder (empty, "(null)").
+func parseAutoProxyOutput(out string) (string, bool) {
+	url, enabled := parseAutoProxyState(out)
+	if !enabled || url == "" {
 		return "", false
 	}
 	return url, true
 }
 
+// parseBypassDomains parses `networksetup -getproxybypassdomains`. With an
+// empty list the tool prints a sentence instead of nothing; it is not a domain.
+func parseBypassDomains(out string) []string {
+	var domains []string
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.Contains(l, "aren't any bypass domains") {
+			continue
+		}
+		domains = append(domains, l)
+	}
+	return domains
+}
+
 func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 	services, err := macOSNetworkServices(ctx)
-	if err != nil || len(services) == 0 {
-		return ProxyConfig{}, fmt.Errorf("sysproxy: no network services found")
+	if err != nil {
+		return ProxyConfig{}, err
 	}
 	svc := services[0]
 	ctx = normalizeContext(ctx)
@@ -140,7 +236,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 		{"-getsecurewebproxy", "http", &cfg.HTTPS},
 		{"-getsocksfirewallproxy", "socks5", &cfg.SOCKS},
 	} {
-		out, err := exec.CommandContext(ctx, "networksetup", q.flag, svc).Output() //nolint:gosec
+		out, err := networksetupOutput(ctx, q.flag, svc)
 		if err == nil {
 			h, p, ok := parseNSProxyOutput(string(out))
 			if ok && h != "" && p != "0" {
@@ -149,15 +245,9 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 		}
 	}
 
-	out, err := exec.CommandContext(ctx, "networksetup", "-getproxybypassdomains", svc).Output() //nolint:gosec
+	out, err := networksetupOutput(ctx, "-getproxybypassdomains", svc)
 	if err == nil {
-		var parts []string
-		for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			if l = strings.TrimSpace(l); l != "" {
-				parts = append(parts, l)
-			}
-		}
-		cfg.NoProxy = strings.Join(parts, ",")
+		cfg.NoProxy = strings.Join(parseBypassDomains(string(out)), ",")
 	}
 
 	if pac, ok := readMacPAC(ctx, svc); ok {
@@ -175,11 +265,17 @@ func setGlobalPAC(ctx context.Context, pacURL string) error {
 	if err != nil {
 		return err
 	}
+	b := &nsBatch{ctx: ctx}
 	for _, svc := range services {
-		_ = runNetworkSetup(ctx, "-setautoproxyurl", svc, pacURL)
-		_ = runNetworkSetup(ctx, "-setautoproxystate", svc, "on")
+		// getGlobal prefers manual proxies over PAC, and macOS applies both when
+		// both are enabled, so PAC mode must switch the manual ones off.
+		b.run("-setwebproxystate", svc, "off")
+		b.run("-setsecurewebproxystate", svc, "off")
+		b.run("-setsocksfirewallproxystate", svc, "off")
+		b.run("-setautoproxyurl", svc, pacURL)
+		b.run("-setautoproxystate", svc, "on")
 	}
-	return nil
+	return b.err()
 }
 
 func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
@@ -187,26 +283,149 @@ func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 	if err != nil {
 		return err
 	}
+	b := &nsBatch{ctx: ctx}
 	for _, svc := range services {
 		// Multi-protocol manual config should disable PAC mode.
-		_ = runNetworkSetup(ctx, "-setautoproxystate", svc, "off")
-		if cfg.HTTP != "" {
-			_ = runNetworkSetup(ctx, "-setwebproxy", svc, hostFromURL(cfg.HTTP), portFromURL(cfg.HTTP))
-			_ = runNetworkSetup(ctx, "-setwebproxystate", svc, "on")
+		b.run("-setautoproxystate", svc, "off")
+		for i, u := range []string{cfg.HTTP, cfg.HTTPS, cfg.SOCKS} {
+			if u == "" {
+				continue
+			}
+			host, port := endpointFromURL(u)
+			b.run(nsProxyKinds[i].set, svc, host, port)
+			b.run(nsProxyKinds[i].state, svc, "on")
 		}
-		if cfg.HTTPS != "" {
-			_ = runNetworkSetup(ctx, "-setsecurewebproxy", svc, hostFromURL(cfg.HTTPS), portFromURL(cfg.HTTPS))
-			_ = runNetworkSetup(ctx, "-setsecurewebproxystate", svc, "on")
-		}
-		if cfg.SOCKS != "" {
-			_ = runNetworkSetup(ctx, "-setsocksfirewallproxy", svc, hostFromURL(cfg.SOCKS), portFromURL(cfg.SOCKS))
-			_ = runNetworkSetup(ctx, "-setsocksfirewallproxystate", svc, "on")
-		}
-		if cfg.NoProxy != "" {
-			_ = runNetworkSetup(ctx, "-setproxybypassdomains", svc, cfg.NoProxy)
+		if domains := splitNoProxy(cfg.NoProxy); len(domains) > 0 {
+			// One argument per domain: networksetup does not split on commas.
+			b.run(append([]string{"-setproxybypassdomains", svc}, domains...)...)
 		}
 	}
-	return nil
+	return b.err()
+}
+
+// nsProxyState is one manual proxy kind of a network service as networksetup
+// reports it.
+type nsProxyState struct {
+	host, port    string
+	enabled, auth bool
+}
+
+func parseNSProxyState(out string) nsProxyState {
+	var st nsProxyState
+	st.host, st.port, st.enabled = parseNSProxyOutput(out)
+	st.auth = strings.Contains(out, "Authenticated Proxy Enabled: 1")
+	return st
+}
+
+// nsServiceState is everything the package may change on one network service.
+type nsServiceState struct {
+	svc        string
+	web        nsProxyState
+	secureWeb  nsProxyState
+	socks      nsProxyState
+	pacURL     string
+	pacEnabled bool
+	bypass     []string
+}
+
+// nsProxyKinds pairs each manual proxy kind with its networksetup verbs.
+var nsProxyKinds = []struct {
+	get, set, state string
+	field           func(*nsServiceState) *nsProxyState
+}{
+	{"-getwebproxy", "-setwebproxy", "-setwebproxystate", func(s *nsServiceState) *nsProxyState { return &s.web }},
+	{"-getsecurewebproxy", "-setsecurewebproxy", "-setsecurewebproxystate", func(s *nsServiceState) *nsProxyState { return &s.secureWeb }},
+	{"-getsocksfirewallproxy", "-setsocksfirewallproxy", "-setsocksfirewallproxystate", func(s *nsServiceState) *nsProxyState { return &s.socks }},
+}
+
+func readServiceState(ctx context.Context, svc string) (nsServiceState, error) {
+	st := nsServiceState{svc: svc}
+	for _, k := range nsProxyKinds {
+		out, err := networksetupOutput(ctx, k.get, svc)
+		if err != nil {
+			return st, err
+		}
+		*k.field(&st) = parseNSProxyState(string(out))
+	}
+	out, err := networksetupOutput(ctx, "-getautoproxyurl", svc)
+	if err != nil {
+		return st, err
+	}
+	st.pacURL, st.pacEnabled = parseAutoProxyState(string(out))
+	out, err = networksetupOutput(ctx, "-getproxybypassdomains", svc)
+	if err != nil {
+		return st, err
+	}
+	st.bypass = parseBypassDomains(string(out))
+	return st, nil
+}
+
+// restoreServiceState makes svc match st exactly.
+func restoreServiceState(ctx context.Context, st nsServiceState) error {
+	b := &nsBatch{ctx: ctx}
+	svc := st.svc
+	for _, k := range nsProxyKinds {
+		ps := *k.field(&st)
+		switch {
+		case ps.host != "" && ps.auth:
+			// The password cannot be read back; leave the authentication flag as is.
+			b.run(k.set, svc, ps.host, ps.port)
+		case ps.host != "":
+			b.run(k.set, svc, ps.host, ps.port, "off")
+		default:
+			b.run(k.set, svc, "", "0")
+		}
+		// -set*proxy turns the proxy on, so the state always comes last.
+		b.run(k.state, svc, onOff(ps.enabled))
+	}
+	if st.pacURL != "" {
+		b.run("-setautoproxyurl", svc, st.pacURL)
+	}
+	// An empty URL cannot be written back (networksetup rejects ""); switching
+	// the state off is enough to make a leftover URL inert.
+	b.run("-setautoproxystate", svc, onOff(st.pacEnabled && st.pacURL != ""))
+	if len(st.bypass) > 0 {
+		b.run(append([]string{"-setproxybypassdomains", svc}, st.bypass...)...)
+	} else {
+		b.run("-setproxybypassdomains", svc, "Empty")
+	}
+	return b.err()
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
+}
+
+func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
+	services, err := macOSNetworkServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	before := make([]nsServiceState, 0, len(services))
+	for _, svc := range services {
+		st, err := readServiceState(ctx, svc)
+		if err != nil {
+			return nil, fmt.Errorf("sysproxy: cannot snapshot proxy settings of %q: %w", svc, err)
+		}
+		before = append(before, st)
+	}
+	return func(ctx context.Context) error {
+		var errs []error
+		for _, want := range before {
+			// Only touch services that actually differ, so unrelated ones are
+			// never rewritten.
+			if now, err := readServiceState(ctx, want.svc); err == nil && reflect.DeepEqual(now, want) {
+				continue
+			}
+			if err := restoreServiceState(ctx, want); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	}, nil
 }
 
 // darwinBackend implements globalBackend using macOS networksetup.
@@ -223,12 +442,16 @@ func (darwinBackend) SetGlobalMulti(ctx context.Context, c ProxyConfig) error {
 	return setGlobalMulti(ctx, c)
 }
 
+func (darwinBackend) SnapshotGlobal(ctx context.Context) (restoreFunc, error) {
+	return snapshotGlobal(ctx)
+}
+
 func init() { activeBackend = darwinBackend{} }
 
 func macOSNetworkServices(ctx context.Context) ([]string, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", "-listallnetworkservices").Output()
+	out, err := networksetupOutput(ctx, "-listallnetworkservices")
 	if err != nil {
-		return nil, fmt.Errorf("sysproxy: networksetup: %w", err)
+		return nil, err
 	}
 	var svcs []string
 	for i, line := range strings.Split(string(out), "\n") {
@@ -236,6 +459,9 @@ func macOSNetworkServices(ctx context.Context) ([]string, error) {
 			continue
 		}
 		svcs = append(svcs, strings.TrimSpace(line))
+	}
+	if len(svcs) == 0 {
+		return nil, fmt.Errorf("sysproxy: networksetup: no enabled network services found")
 	}
 	return svcs, nil
 }

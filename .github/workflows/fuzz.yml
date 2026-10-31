@@ -1,0 +1,40 @@
+name: Fuzz (nightly)
+
+# Runs each Fuzz* target in the root package for a fixed budget (5 targets x 60s ≈ 5 min total).
+# Any crasher is uploaded as an artifact so it can be committed to
+# testdata/fuzz/ as a permanent regression seed.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: 'Per-target fuzz time (Go duration)'
+        default: '60s'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: cicd-sensor/cicd-sensor-action@2b76335ff1c2dd298e983961f7a200d3fe9076c2 # v0.0.36
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+      - name: Fuzz all targets
+        env:
+          FUZZTIME: ${{ github.event.inputs.fuzztime || '60s' }}
+        run: make fuzz FUZZTIME="$FUZZTIME"
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: testdata/fuzz/
+          if-no-files-found: ignore

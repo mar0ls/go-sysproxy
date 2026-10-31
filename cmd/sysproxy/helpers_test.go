@@ -169,3 +169,32 @@ func TestRunCheckUnreachableJSON(t *testing.T) {
 		t.Errorf("expected 'error' key in JSON, got %v", m)
 	}
 }
+
+// The password must never be echoed back to the terminal.
+func TestSetJSON_RedactsPassword(t *testing.T) {
+	for _, k := range []string{"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"} {
+		t.Setenv(k, "")
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"set", "http://alice:s3cr3t@proxy.example.com:8080", "--scope", "shell", "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "s3cr3t") {
+		t.Errorf("password leaked in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "alice") {
+		t.Errorf("username should still be shown: %s", out.String())
+	}
+}
+
+func TestSetInvalidURL_ErrorDoesNotLeakPassword(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"set", "http://alice:s3cr3t@/no-host", "--scope", "shell"}, &out, &errOut)
+	if code == 0 {
+		t.Fatal("expected failure for a URL without host")
+	}
+	if strings.Contains(out.String()+errOut.String(), "s3cr3t") {
+		t.Errorf("password leaked in error output: %s%s", out.String(), errOut.String())
+	}
+}

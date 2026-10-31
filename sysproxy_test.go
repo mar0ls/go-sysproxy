@@ -417,137 +417,6 @@ func TestSetPACGlobal_CallsBackend(t *testing.T) {
 	}
 }
 
-func TestWithProxy_RestoresPrevious(t *testing.T) {
-	prev := ProxyConfig{
-		HTTP:  "http://prev.example.com:8080",
-		HTTPS: "http://prev.example.com:8080",
-		SOCKS: "socks5://prev.example.com:1080",
-	}
-	const next = "http://next.example.com:9090"
-
-	setLog := []string{}
-	multiLog := []ProxyConfig{}
-	useMockBackend(t, &mockBackend{
-		setGlobalFn: func(_ context.Context, p *proxy) error {
-			setLog = append(setLog, p.rawURL)
-			return nil
-		},
-		setGlobalMultiFn: func(_ context.Context, cfg ProxyConfig) error {
-			multiLog = append(multiLog, cfg)
-			return nil
-		},
-		unsetGlobalFn:     func(_ context.Context) error { return nil },
-		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return prev, nil },
-	})
-	t.Cleanup(unsetEnvVars)
-
-	err := WithProxy(context.Background(), next, ScopeGlobal, func(_ context.Context) error {
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(setLog) != 1 || setLog[0] != next {
-		t.Fatalf("expected exactly one SetGlobal(%q), got %v", next, setLog)
-	}
-	if len(multiLog) != 1 || multiLog[0] != prev {
-		t.Fatalf("expected restore SetMulti(%+v), got %+v", prev, multiLog)
-	}
-}
-
-func TestWithProxy_UnsetsWhenNoPrevious(t *testing.T) {
-	unsetCalled := 0
-	useMockBackend(t, &mockBackend{
-		setGlobalFn:       func(_ context.Context, _ *proxy) error { return nil },
-		unsetGlobalFn:     func(_ context.Context) error { unsetCalled++; return nil },
-		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return ProxyConfig{}, ErrProxyNotSet },
-	})
-	t.Cleanup(unsetEnvVars)
-
-	err := WithProxy(context.Background(), "http://next:9090", ScopeGlobal, func(_ context.Context) error {
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unsetCalled != 1 {
-		t.Fatalf("expected exactly one Unset, got %d", unsetCalled)
-	}
-}
-
-func TestWithProxyMulti_RestoresPAC(t *testing.T) {
-	pacURL := "http://config.example.com/proxy.pac"
-	prev := ProxyConfig{PAC: pacURL}
-	next := ProxyConfig{HTTP: "http://next.example.com:8080"}
-
-	pacRestored := ""
-	useMockBackend(t, &mockBackend{
-		setGlobalMultiFn:  func(_ context.Context, _ ProxyConfig) error { return nil },
-		setGlobalPACFn:    func(_ context.Context, u string) error { pacRestored = u; return nil },
-		unsetGlobalFn:     func(_ context.Context) error { return nil },
-		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return prev, nil },
-	})
-	t.Cleanup(unsetEnvVars)
-
-	err := WithProxyMulti(context.Background(), next, ScopeGlobal, func(_ context.Context) error {
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pacRestored != pacURL {
-		t.Fatalf("expected PAC %q to be restored, got %q", pacURL, pacRestored)
-	}
-}
-
-func TestWithProxy_RestoresMultiWhenSnapshotHasProtocols(t *testing.T) {
-	prev := ProxyConfig{
-		HTTP:  "http://prev.example.com:8080",
-		HTTPS: "http://prev.example.com:8443",
-	}
-	restored := ProxyConfig{}
-	useMockBackend(t, &mockBackend{
-		setGlobalFn:      func(_ context.Context, _ *proxy) error { return nil },
-		setGlobalMultiFn: func(_ context.Context, cfg ProxyConfig) error { restored = cfg; return nil },
-		unsetGlobalFn: func(_ context.Context) error {
-			t.Fatal("Unset should not be called when snapshot has state")
-			return nil
-		},
-		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return prev, nil },
-	})
-	t.Cleanup(unsetEnvVars)
-
-	err := WithProxy(context.Background(), "http://next:9090", ScopeGlobal, func(_ context.Context) error {
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if restored != prev {
-		t.Fatalf("SetMulti restore = %+v, want %+v", restored, prev)
-	}
-}
-
-func TestWithProxyMulti_UnsetsWhenNoPrevious(t *testing.T) {
-	unsetCalled := 0
-	useMockBackend(t, &mockBackend{
-		setGlobalMultiFn:  func(_ context.Context, _ ProxyConfig) error { return nil },
-		unsetGlobalFn:     func(_ context.Context) error { unsetCalled++; return nil },
-		getGlobalConfigFn: func(_ context.Context) (ProxyConfig, error) { return ProxyConfig{}, ErrProxyNotSet },
-	})
-	t.Cleanup(unsetEnvVars)
-
-	err := WithProxyMulti(context.Background(), ProxyConfig{HTTP: "http://x:8080"}, ScopeGlobal, func(_ context.Context) error {
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unsetCalled != 1 {
-		t.Fatalf("expected exactly one Unset, got %d", unsetCalled)
-	}
-}
-
 func TestWithProxy_PropagatesFnError(t *testing.T) {
 	useMockBackend(t, &mockBackend{
 		setGlobalFn:       func(_ context.Context, _ *proxy) error { return nil },
@@ -592,28 +461,57 @@ func TestSetPACContext_ScopeShell(t *testing.T) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func TestHostFromURL(t *testing.T) {
-	cases := []struct{ url, want string }{
-		{"http://proxy.example.com:8080", "proxy.example.com"},
-		{"socks5://user:pass@proxy.example.com:1080", "proxy.example.com"},
-		{"://bad", ""},
+// F-14: a URL without a port gets the default of its scheme, never "".
+func TestEndpointFromURL(t *testing.T) {
+	cases := []struct{ url, host, port string }{
+		{"http://proxy.example.com:8080", "proxy.example.com", "8080"},
+		{"socks5://user:pass@proxy.example.com:1080", "proxy.example.com", "1080"},
+		{"http://proxy.example.com", "proxy.example.com", "80"},
+		{"https://proxy.example.com", "proxy.example.com", "443"},
+		{"socks5://proxy.example.com", "proxy.example.com", "1080"},
+		{"socks5h://proxy.example.com", "proxy.example.com", "1080"},
+		{"http://[::1]:3128", "::1", "3128"},
+		{"http://[2001:db8::1]", "2001:db8::1", "80"},
+		{"://bad", "", ""},
 	}
 	for _, c := range cases {
-		if got := hostFromURL(c.url); got != c.want {
-			t.Errorf("hostFromURL(%q) = %q, want %q", c.url, got, c.want)
+		host, port := endpointFromURL(c.url)
+		if host != c.host || port != c.port {
+			t.Errorf("endpointFromURL(%q) = (%q, %q), want (%q, %q)", c.url, host, port, c.host, c.port)
 		}
 	}
 }
 
-func TestPortFromURL(t *testing.T) {
-	cases := []struct{ url, want string }{
-		{"http://proxy.example.com:8080", "8080"},
-		{"socks5://proxy.example.com:1080", "1080"},
-		{"://bad", ""},
+func TestProxyHostPortBracketsIPv6(t *testing.T) {
+	cases := map[string]string{
+		"http://proxy.example.com:8080": "proxy.example.com:8080",
+		"http://[::1]:8080":             "[::1]:8080",
+		"http://[2001:db8::1]":          "[2001:db8::1]:80",
+		"http://10.0.0.1":               "10.0.0.1:80",
 	}
-	for _, c := range cases {
-		if got := portFromURL(c.url); got != c.want {
-			t.Errorf("portFromURL(%q) = %q, want %q", c.url, got, c.want)
+	for raw, want := range cases {
+		p, err := parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := p.hostPort(); got != want {
+			t.Errorf("hostPort(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// F-13: which system field a proxy URL belongs in is decided by its scheme.
+func TestProxyIsSOCKS(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"http://h:1": false, "https://h:1": false,
+		"socks5://h:1": true, "socks5h://h:1": true, "socks4://h:1": true, "socks4a://h:1": true, "socks://h:1": true,
+	} {
+		p, err := parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.isSOCKS() != want {
+			t.Errorf("isSOCKS(%q) = %v, want %v", raw, !want, want)
 		}
 	}
 }
@@ -716,6 +614,111 @@ func TestProxyScopeString(t *testing.T) {
 	for _, c := range cases {
 		if got := c.scope.String(); got != c.want {
 			t.Errorf("ProxyScope(%d).String() = %q, want %q", c.scope, got, c.want)
+		}
+	}
+}
+
+// ── F-01 / F-02: validation hardening and redaction ──────────────────────────
+
+func TestValidatePACURL_RejectsUnsafe(t *testing.T) {
+	for _, bad := range []string{
+		"https://x.example/p.pac'\ntouch /tmp/x\n#",
+		"https://x.example/p.pac\r\nfoo",
+		"https://x.example/a b.pac",
+		"https://x.example/\x00",
+		"http://",
+		"https:///p.pac",
+	} {
+		if err := validatePACURL(bad); err == nil {
+			t.Errorf("validatePACURL(%q) accepted unsafe input", bad)
+		}
+	}
+	if err := validatePACURL("file:///etc/proxy.pac"); err != nil {
+		t.Errorf("file URL must stay valid: %v", err)
+	}
+}
+
+func TestValidateProxyURL_RejectsWhitespaceAndControl(t *testing.T) {
+	for _, bad := range []string{"http://h:80/a b", "http://h:80/\t", "http://h:80/\u2028x"} {
+		if err := validateProxyURL(bad); err == nil {
+			t.Errorf("validateProxyURL(%q) accepted whitespace/control characters", bad)
+		}
+	}
+}
+
+func TestValidateNoProxy(t *testing.T) {
+	for _, ok := range []string{"", "localhost,127.0.0.1,::1", "10.0.0.0/8;*.corp.example.com", "<local>", "[::1]:8080", ".example.com, foo.bar"} {
+		if err := validateNoProxy(ok); err != nil {
+			t.Errorf("validateNoProxy(%q) = %v, want ok", ok, err)
+		}
+	}
+	for _, bad := range []string{"a'b", "a\"b", "a\nb", "a\\b", "$(x)", "`x`", "a\tb", "a&b", "a|b", "a\x00b"} {
+		if err := validateNoProxy(bad); err == nil {
+			t.Errorf("validateNoProxy(%q) accepted a dangerous character", bad)
+		}
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	cases := map[string]string{
+		"http://u:secret@h:80":       "http://u:***@h:80",
+		"http://u:secret@h:80/p?q=1": "http://u:***@h:80/p?q=1",
+		"http://token@h:80":          "http://token@h:80",
+		"http://h:80/p@x":            "http://h:80/p@x",
+		"u:secret@h:80":              "u:***@h:80",
+		"http://u:p@ss@h:80":         "http://u:***@h:80",
+		"plain":                      "plain",
+		"":                           "",
+	}
+	for in, want := range cases {
+		if got := redactURL(in); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestValidationErrorsDoNotLeakPassword(t *testing.T) {
+	for _, raw := range []string{
+		"http://alice:s3cr3t@/nohost",
+		"http://alice:s3cr3t@h:99999",
+		"http://alice:s3cr3t@h:80/a b",
+		"alice:s3cr3t@h:80",
+		"http://alice:s3cr3t@h:80/%zz",
+	} {
+		err := validateProxyURL(raw)
+		if err == nil {
+			t.Errorf("validateProxyURL(%q) unexpectedly succeeded", raw)
+			continue
+		}
+		if strings.Contains(err.Error(), "s3cr3t") {
+			t.Errorf("validateProxyURL(%q) error leaks the password: %v", raw, err)
+		}
+	}
+	if _, err := parse("http://alice:s3cr3t@h:80/%zz"); err == nil || strings.Contains(err.Error(), "s3cr3t") {
+		t.Errorf("parse error must not leak the password: %v", err)
+	}
+	if err := validatePACURL("https://alice:s3cr3t@x.example/a b"); err == nil || strings.Contains(err.Error(), "s3cr3t") {
+		t.Errorf("PAC error must not leak the password: %v", err)
+	}
+}
+
+func TestLogger_DoesNotLeakPassword(t *testing.T) {
+	l := &testLogger{}
+	SetLogger(l)
+	t.Cleanup(func() { SetLogger(nil) })
+	setTestHome(t)
+	t.Cleanup(unsetEnvVars)
+
+	const url = "http://alice:s3cr3t@proxy.example.com:8080"
+	_ = Set(url, ScopeShell)
+	_ = WriteAppConfig(AppCurl, url)
+
+	if len(l.msgs) < 2 {
+		t.Fatalf("expected log messages, got %v", l.msgs)
+	}
+	for _, m := range l.msgs {
+		if strings.Contains(m, "s3cr3t") {
+			t.Errorf("log line leaks the password: %s", m)
 		}
 	}
 }

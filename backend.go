@@ -11,6 +11,11 @@ type globalBackend interface {
 	GetGlobalConfig(ctx context.Context) (ProxyConfig, error)
 	SetGlobalPAC(ctx context.Context, pacURL string) error
 	SetGlobalMulti(ctx context.Context, cfg ProxyConfig) error
+
+	// SnapshotGlobal captures the system proxy state in the backend's native
+	// terms and returns a function that puts it back exactly — including
+	// fields that were empty — so WithProxy can undo a temporary change.
+	SnapshotGlobal(ctx context.Context) (restoreFunc, error)
 }
 
 // activeBackend is the platform implementation used at runtime.

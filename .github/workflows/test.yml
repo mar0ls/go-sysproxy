@@ -73,7 +73,7 @@ jobs:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -o dist/${{ matrix.binary }} ./cmd/sysproxy
+        run: go build -trimpath -o dist/${{ matrix.binary }} ./cmd/sysproxy
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:

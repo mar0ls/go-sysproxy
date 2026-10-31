@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"time"
 
@@ -31,9 +33,10 @@ Flags:
   --timeout  duration          Timeout for check (default: 5s)
 
 Exit codes:
-  0  success
+  0  success (also when only a non-critical step failed, e.g. /etc/environment
+     without root: the warning goes to stderr, or to "warning" in --json)
   1  error
-  2  proxy not set (get)
+  2  proxy not set (get); also when only a PAC URL is active
 
 Examples:
   sysproxy set http://127.0.0.1:8080
@@ -43,6 +46,19 @@ Examples:
   sysproxy pac https://config.example.com/proxy.pac
   sysproxy check http://proxy.corp.com:8080 --timeout 10s
 `
+
+// The library entry points the commands call. Tests replace them so that the
+// exit-code logic can be exercised without touching the OS proxy settings.
+var (
+	setProxy    = sysproxy.SetContext
+	unsetProxy  = sysproxy.UnsetContext
+	setPAC      = sysproxy.SetPACContext
+	getProxy    = sysproxy.GetContext
+	getProxyCfg = sysproxy.GetConfigContext
+
+	isNonCritical     = sysproxy.IsNonCritical
+	requiresElevation = sysproxy.RequiresElevation
+)
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -134,55 +150,85 @@ func cmdSet(proxyURL string, scope sysproxy.ProxyScope, jsonOut bool, stdout, st
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := sysproxy.SetContext(ctx, proxyURL, scope); err != nil {
-		return dieJSON(jsonOut, "set failed: "+err.Error(), stdout, stderr)
-	}
-	printOK(jsonOut, map[string]any{"proxy": proxyURL, "scope": scope.String()}, stdout)
-	return 0
+	err := setProxy(ctx, proxyURL, scope)
+	return finish("set", err, jsonOut, map[string]any{"proxy": redactProxy(proxyURL), "scope": scope.String()}, stdout, stderr)
 }
 
 func cmdGet(jsonOut bool, stdout, stderr io.Writer) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	if jsonOut {
-		cfg, err := sysproxy.GetConfig()
-		if err != nil {
-			printJSON(stdout, map[string]any{"error": err.Error()})
-			return 2
-		}
-		if cfg.HTTP == "" && cfg.HTTPS == "" && cfg.SOCKS == "" {
+		cfg, err := getProxyCfg(ctx)
+		switch {
+		case err != nil && !errors.Is(err, sysproxy.ErrProxyNotSet):
+			printJSON(stdout, map[string]any{"ok": false, "error": err.Error()})
+			return 1
+		case err != nil || cfg == (sysproxy.ProxyConfig{}):
 			printJSON(stdout, map[string]any{"error": "proxy not set"})
 			return 2
 		}
+		// A PAC URL alone counts as configured: GetConfig reports it in cfg.PAC.
 		printJSON(stdout, cfg)
 		return 0
 	}
-	url, err := sysproxy.Get()
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "proxy not set")
-		return 2
+
+	url, err := getProxy(ctx)
+	switch {
+	case err == nil:
+		_, _ = fmt.Fprintln(stdout, url)
+		return 0
+	case !errors.Is(err, sysproxy.ErrProxyNotSet):
+		_, _ = fmt.Fprintln(stderr, "error: get failed: "+err.Error())
+		return 1
 	}
-	_, _ = fmt.Fprintln(stdout, url)
-	return 0
+	// No manual proxy. Tell the user when a PAC URL is active instead, so that
+	// "not set" is not mistaken for "nothing configured".
+	if cfg, cerr := getProxyCfg(ctx); cerr == nil && cfg.PAC != "" {
+		_, _ = fmt.Fprintln(stderr, "proxy not set (PAC active: "+cfg.PAC+"; see 'sysproxy get --json')")
+	} else {
+		_, _ = fmt.Fprintln(stderr, "proxy not set")
+	}
+	return 2
 }
 
 func cmdUnset(scope sysproxy.ProxyScope, jsonOut bool, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := sysproxy.UnsetContext(ctx, scope); err != nil {
-		return dieJSON(jsonOut, "unset failed: "+err.Error(), stdout, stderr)
-	}
-	printOK(jsonOut, map[string]any{"scope": scope.String()}, stdout)
-	return 0
+	err := unsetProxy(ctx, scope)
+	return finish("unset", err, jsonOut, map[string]any{"scope": scope.String()}, stdout, stderr)
 }
 
 func cmdPAC(pacURL string, scope sysproxy.ProxyScope, jsonOut bool, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := sysproxy.SetPACContext(ctx, pacURL, scope); err != nil {
-		return dieJSON(jsonOut, "pac failed: "+err.Error(), stdout, stderr)
+	err := setPAC(ctx, pacURL, scope)
+	return finish("pac", err, jsonOut, map[string]any{"pac": pacURL, "scope": scope.String()}, stdout, stderr)
+}
+
+// finish reports the result of a set/unset/pac call. A non-critical error means
+// the requested change was applied and only an optional step failed (for
+// example /etc/environment without root), so it is a warning with exit code 0;
+// anything else is a failure.
+func finish(what string, err error, jsonOut bool, fields map[string]any, stdout, stderr io.Writer) int {
+	if err == nil {
+		printOK(jsonOut, fields, stdout)
+		return 0
 	}
-	printOK(jsonOut, map[string]any{"pac": pacURL, "scope": scope.String()}, stdout)
+	if !isNonCritical(err) {
+		return dieJSON(jsonOut, what+" failed: "+err.Error(), stdout, stderr)
+	}
+	if jsonOut {
+		fields["warning"] = err.Error()
+		if requiresElevation(err) {
+			fields["requires_elevation"] = true
+		}
+	} else {
+		_, _ = fmt.Fprintln(stderr, "warning: "+err.Error())
+	}
+	printOK(jsonOut, fields, stdout)
 	return 0
 }
 
@@ -193,7 +239,7 @@ func cmdCheck(proxyURL string, timeout time.Duration, jsonOut bool, stdout, stde
 	if err := sysproxy.Check(ctx, proxyURL); err != nil {
 		return dieJSON(jsonOut, "unreachable: "+err.Error(), stdout, stderr)
 	}
-	printOK(jsonOut, map[string]any{"proxy": proxyURL, "reachable": true}, stdout)
+	printOK(jsonOut, map[string]any{"proxy": redactProxy(proxyURL), "reachable": true}, stdout)
 	return 0
 }
 
@@ -208,6 +254,16 @@ func parseScope(s string) (sysproxy.ProxyScope, error) {
 	default:
 		return 0, fmt.Errorf("invalid scope %q — use shell, user or global", s)
 	}
+}
+
+// redactProxy masks the password of a proxy URL before it is echoed to the
+// terminal or a log pipeline.
+func redactProxy(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid URL>"
+	}
+	return u.Redacted()
 }
 
 func printOK(jsonOut bool, fields map[string]any, stdout io.Writer) {

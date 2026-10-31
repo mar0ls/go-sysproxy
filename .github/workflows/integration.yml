@@ -1,0 +1,67 @@
+name: Integration (real system proxy)
+
+# Runs the SYSPROXY_INTEGRATION tests against the real proxy stores of the
+# runner: the Windows registry and PowerShell, dconf (GNOME) and kwriteconfig5
+# (KDE) on Linux, networksetup on macOS. They change the runner's proxy
+# settings, which is fine on a throw-away VM and the reason they are opt-in.
+
+on:
+  push:
+    branches: [ "dev" ]
+  schedule:
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: cicd-sensor/cicd-sensor-action@2b76335ff1c2dd298e983961f7a200d3fe9076c2 # v0.0.36
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+      - name: Integration tests (registry + Windows PowerShell)
+        env:
+          SYSPROXY_INTEGRATION: '1'
+        run: go test -run Integration -v -count=1 .
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: cicd-sensor/cicd-sensor-action@2b76335ff1c2dd298e983961f7a200d3fe9076c2 # v0.0.36
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+      - name: Install gsettings backend and KDE config tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dbus dbus-x11 dconf-gsettings-backend dconf-service \
+            libglib2.0-bin gsettings-desktop-schemas libkf5config-bin
+      - name: Integration tests (dconf + kwriteconfig5, inside a session bus)
+        env:
+          SYSPROXY_INTEGRATION: '1'
+        run: dbus-run-session -- go test -run Integration -v -count=1 .
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: cicd-sensor/cicd-sensor-action@2b76335ff1c2dd298e983961f7a200d3fe9076c2 # v0.0.36
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+      - name: Integration tests (networksetup)
+        env:
+          SYSPROXY_INTEGRATION: '1'
+        run: go test -run Integration -v -count=1 .
