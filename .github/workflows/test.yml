@@ -96,6 +96,10 @@ jobs:
         with:
           version: v2.11.4
           args: --timeout=5m
+      - name: Threat model matches the code
+        # Fails when THREAT_MODEL.md names a file, workflow or test that no longer
+        # exists, or its threat register is inconsistent (see its section 9).
+        run: go test -run '^TestThreatModel' -count=1 -v .
 
   ci:
     runs-on: ubuntu-latest
