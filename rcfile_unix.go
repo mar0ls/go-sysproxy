@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 )
 
 var unixRCFiles = []string{".bashrc", ".zshrc", ".profile", ".bash_profile"}
@@ -68,7 +69,7 @@ func setUserMulti(cfg ProxyConfig) error {
 // file the user does not have can change shell behaviour — a new
 // ~/.bash_profile, for instance, makes bash login shells stop reading
 // ~/.profile — so a file is only created when none exists, and then only the
-// one matching the user's shell.
+// one matching the user's shell. The exception is ~/.zshrc for zsh users.
 func rcTargets(home string) []string {
 	var targets []string
 	for _, rc := range unixRCFiles {
@@ -76,6 +77,12 @@ func rcTargets(home string) []string {
 		if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
 			targets = append(targets, path)
 		}
+	}
+	// zsh reads neither ~/.profile nor ~/.bashrc, and creating ~/.zshrc shadows
+	// nothing, so a zsh user always gets one.
+	zshrc := filepath.Join(home, ".zshrc")
+	if filepath.Base(os.Getenv("SHELL")) == "zsh" && !slices.Contains(targets, zshrc) {
+		targets = append(targets, zshrc)
 	}
 	if len(targets) == 0 {
 		targets = append(targets, filepath.Join(home, defaultRCFile()))

@@ -128,13 +128,15 @@ func validatePACURL(pacURL string) error {
 }
 
 // validateNoProxy checks a comma/semicolon separated bypass list. Only
-// characters that can appear in host names, IP addresses, CIDR ranges, ports,
-// wildcards and the Windows "<local>" token are accepted; quotes, backslashes,
-// '$', backticks and every kind of control character are not.
+// characters that can appear in host names (letters and digits of any script
+// included), IP addresses, CIDR ranges, ports, wildcards and the Windows
+// "<local>" token are accepted; quotes, backslashes, '$', backticks and every
+// kind of control or format character are not.
 func validateNoProxy(noProxy string) error {
 	for _, r := range noProxy {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case unicode.IsLetter(r), unicode.IsDigit(r), unicode.IsMark(r): // internationalised host names
 		case strings.ContainsRune("._-*:/,;<>[]% ", r):
 		default:
 			return fmt.Errorf("sysproxy: NoProxy contains unsupported character %q", r)

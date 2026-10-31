@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -173,20 +172,16 @@ func setGlobalPAC(ctx context.Context, pacURL string) error {
 
 func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 	b := &regBatch{ctx: ctx}
-	b.try("delete", regKey, "/v", "AutoConfigURL", "/f")
-	b.run("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
-	var servers []string
-	if cfg.HTTP != "" {
-		servers = append(servers, "http="+hostPortFromURL(cfg.HTTP))
-	}
-	if cfg.HTTPS != "" {
-		servers = append(servers, "https="+hostPortFromURL(cfg.HTTPS))
-	}
-	if cfg.SOCKS != "" {
-		servers = append(servers, "socks="+hostPortFromURL(cfg.SOCKS))
-	}
-	if len(servers) > 0 {
-		b.run("add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", strings.Join(servers, ";"), "/f")
+	// Only a proxy kind in cfg turns the manual proxy on and replaces the PAC
+	// URL; the kinds cfg leaves empty keep their current value.
+	if cfg.HTTP != "" || cfg.HTTPS != "" || cfg.SOCKS != "" {
+		current, err := readRegValue(ctx, "ProxyServer")
+		if err != nil {
+			return err
+		}
+		b.try("delete", regKey, "/v", "AutoConfigURL", "/f")
+		b.run("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
+		b.run("add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", mergeProxyServer(current.data, cfg), "/f")
 	}
 	if bypass := splitNoProxy(cfg.NoProxy); len(bypass) > 0 {
 		b.run("add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", proxyOverrideValue(bypass), "/f")
@@ -420,11 +415,6 @@ func (windowsBackend) SnapshotGlobal(ctx context.Context) (restoreFunc, error) {
 }
 
 func init() { activeBackend = windowsBackend{} }
-
-func hostPortFromURL(rawURL string) string {
-	host, port := endpointFromURL(rawURL)
-	return net.JoinHostPort(host, port)
-}
 
 const psProfileName = "Microsoft.PowerShell_profile.ps1"
 

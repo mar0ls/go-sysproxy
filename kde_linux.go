@@ -4,6 +4,7 @@ package sysproxy
 
 import (
 	"context"
+	"net"
 	"strings"
 )
 
@@ -116,7 +117,7 @@ func normalizeKDEProxyURL(raw string) string {
 		return raw
 	}
 	if idx := strings.LastIndex(raw, " "); idx > 0 {
-		return "http://" + raw[:idx] + ":" + raw[idx+1:]
+		return "http://" + net.JoinHostPort(raw[:idx], raw[idx+1:])
 	}
 	return "http://" + raw
 }

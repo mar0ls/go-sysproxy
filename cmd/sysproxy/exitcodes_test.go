@@ -215,3 +215,21 @@ func TestGet_NeverPrintsPasswords(t *testing.T) {
 		}
 	}
 }
+
+// A PAC URL can carry a login too; neither the pac command nor get may echo it.
+func TestPAC_NeverPrintsPasswords(t *testing.T) {
+	const pac = "https://carol:pacpw@pac.example.com/p.pac"
+	stubAPI(t, nil, nil, nil)
+	for _, args := range [][]string{{"pac", pac}, {"pac", pac, "--json"}} {
+		code, out, errOut := runCLI(args...)
+		if code != 0 || strings.Contains(out+errOut, "pacpw") {
+			t.Errorf("%v: exit %d, output leaks the password:\n%s%s", args, code, out, errOut)
+		}
+	}
+
+	stubGet(t, "", sysproxy.ErrProxyNotSet, sysproxy.ProxyConfig{PAC: pac}, nil)
+	code, out, errOut := runCLI("get")
+	if code != 2 || strings.Contains(out+errOut, "pacpw") || !strings.Contains(errOut, "pac.example.com") {
+		t.Errorf("get with a PAC URL: exit %d, out %q, err %q", code, out, errOut)
+	}
+}

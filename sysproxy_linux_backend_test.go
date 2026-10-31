@@ -676,3 +676,33 @@ func TestLinuxGlobal_NoSudoWarningWithoutRoot(t *testing.T) {
 		t.Fatalf("err = %v, want nil", err)
 	}
 }
+
+func TestLinuxGetGlobalConfig_IPv6HostsAreBracketed(t *testing.T) {
+	installFakeDesktop(t, "gsettings")
+	ctx := context.Background()
+	p, _ := parse("http://[::1]:8080")
+	if err := setGlobal(ctx, p); err != nil && !IsNonCritical(err) {
+		t.Fatal(err)
+	}
+	cfg, err := getGlobalConfig(ctx)
+	if err != nil || cfg.HTTP != "http://[::1]:8080" {
+		t.Fatalf("GetConfig = %+v, %v; want a bracketed IPv6 URL", cfg, err)
+	}
+	if got, err := getGlobal(ctx); err != nil || got != cfg.HTTP {
+		t.Errorf("Get = %q, %v; want the same URL as GetConfig", got, err)
+	}
+}
+
+// kwriteconfig without kreadconfig (a partial KDE install) can change the
+// proxy but not read it back, so WithProxy cannot promise a restore and has to
+// refuse before it changes anything.
+func TestLinuxSnapshot_KDEWithoutKreadconfigIsAnError(t *testing.T) {
+	f := installFakeDesktop(t, "kwriteconfig6")
+	_, err := snapshotGlobal(context.Background())
+	if !errors.Is(err, ErrToolMissing) {
+		t.Fatalf("snapshotGlobal = %v, want ErrToolMissing", err)
+	}
+	if strings.Contains(f.calls(), "kwriteconfig") {
+		t.Errorf("snapshot must not write anything:\n%s", f.calls())
+	}
+}

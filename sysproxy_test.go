@@ -749,3 +749,49 @@ func TestLogger_CoversSetMultiAndSetPACWithoutPasswords(t *testing.T) {
 		}
 	}
 }
+
+// The PAC URL variable set by SetPAC(ScopeShell) is removed again by Unset.
+func TestUnsetScopeShell_ClearsAutoproxy(t *testing.T) {
+	setTestHome(t)
+	t.Cleanup(unsetEnvVars)
+	if err := SetPAC("https://pac.example.com/p.pac", ScopeShell); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("AUTOPROXY") == "" {
+		t.Fatal("SetPAC did not set AUTOPROXY")
+	}
+	if err := Unset(ScopeShell); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := os.LookupEnv("AUTOPROXY"); ok {
+		t.Errorf("AUTOPROXY still set to %q after Unset", v)
+	}
+}
+
+// Every variable WithProxy snapshots is one that Unset clears, so the two
+// lists cannot drift apart.
+func TestUnsetEnvVars_ClearsEveryManagedVariable(t *testing.T) {
+	for _, k := range proxyEnvNames {
+		t.Setenv(k, "x")
+	}
+	unsetEnvVars()
+	for _, k := range proxyEnvNames {
+		if v, ok := os.LookupEnv(k); ok {
+			t.Errorf("%s still set to %q", k, v)
+		}
+	}
+}
+
+// Non-ASCII host names are legitimate bypass entries; dangerous characters stay out.
+func TestValidateNoProxy_InternationalHostNames(t *testing.T) {
+	for _, ok := range []string{"*.münchen.de", "例え.jp", "пример.рф,localhost", "köln.de;10.0.0.0/8"} {
+		if err := validateNoProxy(ok); err != nil {
+			t.Errorf("validateNoProxy(%q) = %v, want ok", ok, err)
+		}
+	}
+	for _, bad := range []string{"a\u202eb", "a\u200bb", "a\u2028b", "x\u0085y", "ä'b", "ä\"b", "ä$b"} {
+		if err := validateNoProxy(bad); err == nil {
+			t.Errorf("validateNoProxy(%q) accepted a control, format or shell character", bad)
+		}
+	}
+}

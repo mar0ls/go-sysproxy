@@ -243,7 +243,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 		if err == nil {
 			h, p, ok := parseNSProxyOutput(string(out))
 			if ok && h != "" && p != "0" {
-				*q.dest = q.scheme + "://" + h + ":" + p
+				*q.dest = q.scheme + "://" + net.JoinHostPort(h, p)
 			}
 		}
 	}

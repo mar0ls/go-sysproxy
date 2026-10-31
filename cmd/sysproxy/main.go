@@ -237,7 +237,7 @@ func cmdGet(jsonOut bool, stdout, stderr io.Writer) int {
 	// No manual proxy. Tell the user when a PAC URL is active instead, so that
 	// "not set" is not mistaken for "nothing configured".
 	if cfg, cerr := getProxyCfg(ctx); cerr == nil && cfg.PAC != "" {
-		_, _ = fmt.Fprintln(stderr, "proxy not set (PAC active: "+cfg.PAC+"; see 'sysproxy get --json')")
+		_, _ = fmt.Fprintln(stderr, "proxy not set (PAC active: "+redactProxy(cfg.PAC)+"; see 'sysproxy get --json')")
 	} else {
 		_, _ = fmt.Fprintln(stderr, "proxy not set")
 	}
@@ -257,7 +257,7 @@ func cmdPAC(pacURL string, scope sysproxy.ProxyScope, jsonOut bool, stdout, stde
 	defer cancel()
 
 	err := setPAC(ctx, pacURL, scope)
-	return finish("pac", err, jsonOut, map[string]any{"pac": pacURL, "scope": scope.String()}, stdout, stderr)
+	return finish("pac", err, jsonOut, map[string]any{"pac": redactProxy(pacURL), "scope": scope.String()}, stdout, stderr)
 }
 
 // finish reports the result of a set/unset/pac call. A non-critical error means

@@ -315,7 +315,7 @@ func getGlobalConfigGnome(ctx context.Context) (ProxyConfig, error) {
 		h := gsettingsField(ctx, q.schema, "host")
 		p := gsettingsField(ctx, q.schema, "port")
 		if h != "" && p != "0" {
-			*q.dest = q.scheme + "://" + h + ":" + p
+			*q.dest = q.scheme + "://" + net.JoinHostPort(h, p)
 		}
 	}
 
@@ -489,7 +489,11 @@ func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
 		}
 	}
 	var kde []keyValue
-	if kdeWritable() && kreadconfigBinary() != "" {
+	if kdeWritable() {
+		// Set writes the KDE keys, so the restore has to be able to read them.
+		if kreadconfigBinary() == "" {
+			return nil, fmt.Errorf("%w: kreadconfig6/kreadconfig5, needed to save the KDE proxy state", ErrToolMissing)
+		}
 		for _, key := range kdeKeys {
 			v, err := kdeRead(ctx, key)
 			if err != nil {

@@ -565,3 +565,41 @@ func TestSetUser_WarnsWhenRunAsRootThroughSudoWithRootsHome(t *testing.T) {
 		t.Errorf("HOME is the caller's home: err = %v, want nil", err)
 	}
 }
+
+// zsh reads neither ~/.profile nor ~/.bashrc, so a zsh user who has only those
+// would get a block their shell never sources.
+func TestSetUser_ZshUserGetsAZshrcEvenWithOtherRCFiles(t *testing.T) {
+	home := setupRC(t, map[string]string{".profile": "export A=1\n", ".bashrc": "export B=2\n"})
+	t.Setenv("SHELL", "/usr/bin/zsh")
+
+	if err := setUser("http://proxy.example.com:8080"); err != nil {
+		t.Fatal(err)
+	}
+	for _, rc := range []string{".zshrc", ".profile", ".bashrc"} {
+		if !strings.Contains(readFile(t, filepath.Join(home, rc)), "export http_proxy=") {
+			t.Errorf("%s did not receive the block", rc)
+		}
+	}
+	if exists(filepath.Join(home, ".bash_profile")) {
+		t.Error(".bash_profile must not be created: it would shadow ~/.profile")
+	}
+
+	if err := unsetUser(); err != nil {
+		t.Fatal(err)
+	}
+	for _, rc := range []string{".profile", ".bashrc"} {
+		if strings.Contains(readFile(t, filepath.Join(home, rc)), "go-sysproxy") {
+			t.Errorf("%s still holds the block after unset", rc)
+		}
+	}
+}
+
+func TestSetUser_BashUserDoesNotGetAZshrc(t *testing.T) {
+	home := setupRC(t, map[string]string{".profile": "export A=1\n"})
+	if err := setUser("http://proxy.example.com:8080"); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(home, ".zshrc")) {
+		t.Error("a bash user must not get a .zshrc")
+	}
+}

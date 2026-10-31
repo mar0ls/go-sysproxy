@@ -151,6 +151,19 @@ var (
 		`^(?:export\s+|\$env:)(?:no_proxy|NO_PROXY)\s*=\s*'localhost,127\.0\.0\.1,::1'\s*$`)
 )
 
+// userVarRE matches the ways a user's own start-up file defines a variable:
+// export NAME=, declare -x NAME=, typeset -x NAME=, readonly NAME=, a plain
+// NAME= assignment and PowerShell's $env:NAME =.
+var userVarRE = regexp.MustCompile(`^\s*(?:(?:export|declare\s+-x|typeset\s+-x|readonly)\s+|\$env:)?([A-Za-z_][A-Za-z0-9_]*)\s*=`)
+
+// definedVar returns the variable a line of the user's own file assigns, or "".
+func definedVar(line string) string {
+	if m := userVarRE.FindStringSubmatch(line); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
 func varName(line string) string {
 	if m := varNameRE.FindStringSubmatch(line); m != nil {
 		return m[1]
@@ -207,7 +220,7 @@ var noProxyNames = []string{"no_proxy", "NO_PROXY"}
 func dropIfUserDefined(body []string, content string, names []string) []string {
 	userDefined := false
 	for _, l := range splitLines(updateBlock(content, nil)) {
-		if v := varName(l); v != "" && containsString(names, v) {
+		if v := definedVar(l); v != "" && containsString(names, v) {
 			userDefined = true
 			break
 		}
