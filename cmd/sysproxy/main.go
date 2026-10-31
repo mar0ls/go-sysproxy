@@ -36,7 +36,8 @@ Exit codes:
   0  success (also when only a non-critical step failed, e.g. /etc/environment
      without root: the warning goes to stderr, or to "warning" in --json)
   1  error
-  2  proxy not set (get); also when only a PAC URL is active
+  2  proxy not set (get); plain get also exits 2 when only a PAC URL is active
+     (get --json prints it and exits 0)
 
 Examples:
   sysproxy set http://127.0.0.1:8080

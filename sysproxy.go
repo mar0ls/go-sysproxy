@@ -1,7 +1,7 @@
 // Package sysproxy provides cross-platform system proxy management.
 //
 // It supports setting, clearing, and querying the OS system proxy on
-// macOS (networksetup), Linux (gsettings / kwriteconfig5, /etc/environment),
+// macOS (networksetup), Linux (gsettings / kwriteconfig6|5, /etc/environment),
 // and Windows (registry + Credential Manager).
 //
 // Quick start:
