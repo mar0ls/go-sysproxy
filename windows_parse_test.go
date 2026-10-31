@@ -125,3 +125,45 @@ func TestProxyOverrideValue(t *testing.T) {
 		t.Errorf("proxyOverrideValue = %q", got)
 	}
 }
+
+// The Windows ProxyServer value as SetMulti rewrites it: kinds that cfg leaves
+// empty keep what is already configured.
+func TestMergeProxyServer(t *testing.T) {
+	cases := []struct {
+		name, current string
+		cfg           ProxyConfig
+		want          string
+	}{
+		{"nothing configured", "", ProxyConfig{HTTP: "http://h.example.com:80"}, "http=h.example.com:80"},
+		{
+			"keeps other kinds", "http=a.example.com:1;https=b.example.com:2;socks=c.example.com:3",
+			ProxyConfig{HTTP: "http://new.example.com:9"},
+			"http=new.example.com:9;https=b.example.com:2;socks=c.example.com:3",
+		},
+		{
+			"bare value counts as http and https", "old.example.com:8080",
+			ProxyConfig{SOCKS: "socks5://s.example.com:1080"},
+			"http=old.example.com:8080;https=old.example.com:8080;socks=s.example.com:1080",
+		},
+		{
+			"all kinds replaced", "http=a:1;https=b:2;socks=c:3",
+			ProxyConfig{HTTP: "http://x:1", HTTPS: "http://y:2", SOCKS: "socks5://z:3"},
+			"http=x:1;https=y:2;socks=z:3",
+		},
+		{"keeps unmanaged kinds", "ftp=f.example.com:21;http=a:1", ProxyConfig{HTTPS: "http://b:2"}, "http=a:1;https=b:2;ftp=f.example.com:21"},
+		{"IPv6", "", ProxyConfig{HTTP: "http://[::1]:8080"}, "http=[::1]:8080"},
+	}
+	for _, c := range cases {
+		if got := mergeProxyServer(c.current, c.cfg); got != c.want {
+			t.Errorf("%s: mergeProxyServer(%q) = %q, want %q", c.name, c.current, got, c.want)
+		}
+	}
+}
+
+// A URL that does not parse gives no host and must not become "http=:".
+func TestMergeProxyServer_SkipsUnparsableURLs(t *testing.T) {
+	got := mergeProxyServer("https=b.example.com:2", ProxyConfig{HTTP: "://"})
+	if got != "https=b.example.com:2" {
+		t.Errorf("got %q, want the current value unchanged", got)
+	}
+}

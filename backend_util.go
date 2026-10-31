@@ -51,6 +51,15 @@ func flatten(err error) error {
 	return errors.New(err.Error())
 }
 
+// unclassified returns err, or its flattened text when it carries the
+// non-critical classification.
+func unclassified(err error) error {
+	if IsNonCritical(err) {
+		return flatten(err)
+	}
+	return err
+}
+
 // combine returns the earlier error if the later one is nil and vice versa, so
 // errors.Is/As keep working against a single error without a join wrapper.
 func combine(first, second error) error {

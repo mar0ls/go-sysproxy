@@ -35,3 +35,18 @@ func TestNormalizeKDESocksURL(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeKDEProxyURL_LegacyIPv6(t *testing.T) {
+	if got := normalizeKDEProxyURL("::1 8080"); got != "http://[::1]:8080" {
+		t.Errorf("got %q, want a bracketed IPv6 URL", got)
+	}
+	if got := normalizeKDESocksURL("fd00::5 1080"); got != "socks5://[fd00::5]:1080" {
+		t.Errorf("socks: got %q", got)
+	}
+}
+
+func TestNormalizeKDEProxyURL_AlreadyBracketedIPv6(t *testing.T) {
+	if got := normalizeKDEProxyURL("[::1] 8080"); got != "http://[::1]:8080" {
+		t.Errorf("got %q, want no double brackets", got)
+	}
+}

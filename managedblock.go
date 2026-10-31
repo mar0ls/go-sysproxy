@@ -151,6 +151,63 @@ var (
 		`^(?:export\s+|\$env:)(?:no_proxy|NO_PROXY)\s*=\s*'localhost,127\.0\.0\.1,::1'\s*$`)
 )
 
+var (
+	psEnvRE  = regexp.MustCompile(`^\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=`)
+	assignRE = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\+?=`)
+)
+
+// declaringWords start a shell line that defines variables.
+var declaringWords = []string{"export", "declare", "typeset", "readonly", "local"}
+
+// definedVars returns the variables a line of the user's own start-up file
+// defines: after export/declare/typeset/readonly/local (flags such as -gx
+// skipped) every NAME=value word, a plain assignment line (a NAME=value in
+// front of a command only sets it for that command and does not count), and
+// PowerShell's $env:NAME =. It is a heuristic over shell syntax, not a parser.
+func definedVars(line string) []string {
+	line = strings.TrimSpace(line)
+	if m := psEnvRE.FindStringSubmatch(line); m != nil {
+		return []string{m[1]}
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return nil
+	}
+	assignment := func(f string) string {
+		if m := assignRE.FindStringSubmatch(f); m != nil {
+			return m[1]
+		}
+		return ""
+	}
+	var names []string
+	if containsString(declaringWords, fields[0]) {
+		for _, f := range fields[1:] {
+			if n := assignment(f); n != "" {
+				names = append(names, n)
+			}
+		}
+		return names
+	}
+	// A plain assignment line: every word assigns, or the value is quoted and
+	// may contain spaces (NO_PROXY="a b").
+	allAssign := true
+	for _, f := range fields {
+		n := assignment(f)
+		if n == "" {
+			allAssign = false
+			break
+		}
+		names = append(names, n)
+	}
+	if allAssign || (assignment(fields[0]) != "" && strings.ContainsAny(fields[0], `"'`)) {
+		if !allAssign {
+			names = []string{assignment(fields[0])}
+		}
+		return names
+	}
+	return nil
+}
+
 func varName(line string) string {
 	if m := varNameRE.FindStringSubmatch(line); m != nil {
 		return m[1]
@@ -207,8 +264,12 @@ var noProxyNames = []string{"no_proxy", "NO_PROXY"}
 func dropIfUserDefined(body []string, content string, names []string) []string {
 	userDefined := false
 	for _, l := range splitLines(updateBlock(content, nil)) {
-		if v := varName(l); v != "" && containsString(names, v) {
-			userDefined = true
+		for _, v := range definedVars(l) {
+			if containsString(names, v) {
+				userDefined = true
+			}
+		}
+		if userDefined {
 			break
 		}
 	}
@@ -272,6 +333,11 @@ func removeBlockFile(path string) error {
 	out := removeLegacyLines(updateBlock(content, nil))
 	if out == content {
 		return nil
+	}
+	if strings.TrimSpace(out) == "" {
+		// Nothing but go-sysproxy's lines was in the file. Leaving an empty
+		// ~/.zshrc behind would, for one, switch off zsh's first-run setup.
+		return os.Remove(path)
 	}
 	return writeFileAtomic(path, []byte(out), 0o600)
 }

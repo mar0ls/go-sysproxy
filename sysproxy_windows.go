@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +15,7 @@ import (
 const regKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 
 func runReg(ctx context.Context, args ...string) error {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", args...).CombinedOutput() //nolint:gosec
+	out, err := systemCommand(ctx, "reg", args...).CombinedOutput()
 	return execError("reg", regWhat(args), err, out)
 }
 
@@ -112,7 +111,7 @@ func unsetGlobal(ctx context.Context) error {
 // currentProxyHost reads the proxy host from the registry so Unset can clean
 // up Credential Manager without requiring the caller to pass the original URL.
 func currentProxyHost(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
+	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
 		return "", err
 	}
@@ -123,7 +122,7 @@ func currentProxyHost(ctx context.Context) (string, error) {
 }
 
 func getGlobal(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyEnable").Output()
+	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyEnable").Output()
 	if err != nil {
 		// ProxyEnable missing → check PAC
 		if pac, perr := readAutoConfigURL(ctx); perr == nil && pac != "" {
@@ -137,7 +136,7 @@ func getGlobal(ctx context.Context) (string, error) {
 		}
 		return "", ErrProxyNotEnabled
 	}
-	out, err = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
+	out, err = systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
 		return "", fmt.Errorf("sysproxy: cannot read ProxyServer: %w", err)
 	}
@@ -156,7 +155,7 @@ func getGlobal(ctx context.Context) (string, error) {
 // readAutoConfigURL reads AutoConfigURL from the registry. A missing value
 // returns "" and nil so callers can distinguish "no PAC" from a real error.
 func readAutoConfigURL(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "AutoConfigURL").Output()
+	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", "AutoConfigURL").Output()
 	if err != nil {
 		return "", nil //nolint:nilerr
 	}
@@ -173,20 +172,16 @@ func setGlobalPAC(ctx context.Context, pacURL string) error {
 
 func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 	b := &regBatch{ctx: ctx}
-	b.try("delete", regKey, "/v", "AutoConfigURL", "/f")
-	b.run("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
-	var servers []string
-	if cfg.HTTP != "" {
-		servers = append(servers, "http="+hostPortFromURL(cfg.HTTP))
-	}
-	if cfg.HTTPS != "" {
-		servers = append(servers, "https="+hostPortFromURL(cfg.HTTPS))
-	}
-	if cfg.SOCKS != "" {
-		servers = append(servers, "socks="+hostPortFromURL(cfg.SOCKS))
-	}
-	if len(servers) > 0 {
-		b.run("add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", strings.Join(servers, ";"), "/f")
+	// Only a proxy kind in cfg turns the manual proxy on and replaces the PAC
+	// URL; the kinds cfg leaves empty keep their current value.
+	if cfg.HTTP != "" || cfg.HTTPS != "" || cfg.SOCKS != "" {
+		current, err := readRegValue(ctx, "ProxyServer")
+		if err != nil {
+			return err
+		}
+		b.try("delete", regKey, "/v", "AutoConfigURL", "/f")
+		b.run("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
+		b.run("add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", mergeProxyServer(current.data, cfg), "/f")
 	}
 	if bypass := splitNoProxy(cfg.NoProxy); len(bypass) > 0 {
 		b.run("add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", proxyOverrideValue(bypass), "/f")
@@ -198,7 +193,7 @@ func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 	pac, _ := readAutoConfigURL(ctx)
 
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyEnable").Output()
+	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyEnable").Output()
 	proxyEnabled := err == nil && strings.Contains(string(out), "0x1")
 
 	if !proxyEnabled {
@@ -208,7 +203,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 		return ProxyConfig{}, ErrProxyNotEnabled
 	}
 
-	out, err = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
+	out, err = systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
 		return ProxyConfig{}, fmt.Errorf("sysproxy: cannot read ProxyServer: %w", err)
 	}
@@ -219,7 +214,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 	cfg := parseWindowsProxyServer(server)
 	cfg.PAC = pac
 
-	out, _ = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyOverride").Output()
+	out, _ = systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyOverride").Output()
 	cfg.NoProxy = extractRegValue(string(out), "ProxyOverride")
 
 	return cfg, nil
@@ -337,12 +332,25 @@ type regValue struct {
 // regValueNames are the values the package writes.
 var regValueNames = []string{"ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL"}
 
+// regQuery runs `reg query` on the Internet Settings key (with extra
+// arguments); tests replace it.
+var regQuery = func(ctx context.Context, args ...string) ([]byte, error) {
+	return systemCommand(ctx, "reg", append([]string{"query", regKey}, args...)...).Output()
+}
+
 func readRegValue(ctx context.Context, name string) (regValue, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", name).Output() //nolint:gosec
+	out, err := regQuery(ctx, "/v", name)
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return regValue{name: name}, nil // value does not exist
+			// reg exits 1 both for a missing value and for a key it cannot read.
+			// Only when the key itself reads fine is the value really absent;
+			// treating "access denied" as "absent" would let a snapshot or a
+			// merge silently discard the existing settings.
+			if _, kerr := regQuery(ctx); kerr != nil {
+				return regValue{}, execError("reg", "query "+name, kerr, nil)
+			}
+			return regValue{name: name}, nil
 		}
 		return regValue{}, execError("reg", "query "+name, err, nil)
 	}
@@ -420,11 +428,6 @@ func (windowsBackend) SnapshotGlobal(ctx context.Context) (restoreFunc, error) {
 }
 
 func init() { activeBackend = windowsBackend{} }
-
-func hostPortFromURL(rawURL string) string {
-	host, port := endpointFromURL(rawURL)
-	return net.JoinHostPort(host, port)
-}
 
 const psProfileName = "Microsoft.PowerShell_profile.ps1"
 

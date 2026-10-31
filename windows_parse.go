@@ -31,6 +31,45 @@ func parseWindowsProxyServer(server string) ProxyConfig {
 	return cfg
 }
 
+// mergeProxyServer returns the ProxyServer value for SetMulti: the kinds cfg
+// names are replaced, every other kind that current already holds (a bare
+// host:port counts as http and https) is kept, as are kinds this package does
+// not manage, such as ftp.
+func mergeProxyServer(current string, cfg ProxyConfig) string {
+	kinds := map[string]string{}
+	var extra []string
+	if current = strings.TrimSpace(current); current != "" && !strings.Contains(current, "=") {
+		kinds["http"], kinds["https"] = current, current
+	} else {
+		for _, part := range strings.Split(current, ";") {
+			k, v, ok := strings.Cut(part, "=")
+			if k, v = strings.TrimSpace(k), strings.TrimSpace(v); !ok || k == "" || v == "" {
+				continue
+			}
+			switch k {
+			case "http", "https", "socks":
+				kinds[k] = v
+			default:
+				extra = append(extra, k+"="+v)
+			}
+		}
+	}
+	for kind, u := range map[string]string{"http": cfg.HTTP, "https": cfg.HTTPS, "socks": cfg.SOCKS} {
+		if u != "" {
+			if host, port := endpointFromURL(u); host != "" {
+				kinds[kind] = joinHostPort(host, port)
+			}
+		}
+	}
+	var parts []string
+	for _, kind := range []string{"http", "https", "socks"} {
+		if v := kinds[kind]; v != "" {
+			parts = append(parts, kind+"="+v)
+		}
+	}
+	return strings.Join(append(parts, extra...), ";")
+}
+
 // proxyServerValue is the ProxyServer registry value for a single proxy. A
 // bare host:port is an HTTP proxy for every protocol; SOCKS needs its own entry.
 func proxyServerValue(p *proxy) string {

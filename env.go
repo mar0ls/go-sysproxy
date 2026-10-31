@@ -2,8 +2,12 @@ package sysproxy
 
 import "os"
 
+// proxyURLEnvNames are the variables that carry a proxy URL; proxyEnvNames
+// (backend_util.go) is the full set Set* writes and Unset clears.
+var proxyURLEnvNames = []string{"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"}
+
 func setEnvVars(proxyURL string) {
-	for _, k := range []string{"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"} {
+	for _, k := range proxyURLEnvNames {
 		_ = os.Setenv(k, proxyURL)
 	}
 	_ = os.Setenv("no_proxy", "localhost,127.0.0.1,::1")
@@ -11,16 +15,13 @@ func setEnvVars(proxyURL string) {
 }
 
 func unsetEnvVars() {
-	for _, k := range []string{
-		"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY",
-		"all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY",
-	} {
+	for _, k := range proxyEnvNames {
 		_ = os.Unsetenv(k)
 	}
 }
 
 func setEnvVarsPAC(pacURL string) {
-	for _, k := range []string{"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"} {
+	for _, k := range proxyURLEnvNames {
 		_ = os.Setenv(k, "")
 	}
 	_ = os.Setenv("no_proxy", "localhost,127.0.0.1,::1")

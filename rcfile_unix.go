@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 )
 
 var unixRCFiles = []string{".bashrc", ".zshrc", ".profile", ".bash_profile"}
@@ -68,19 +69,46 @@ func setUserMulti(cfg ProxyConfig) error {
 // file the user does not have can change shell behaviour — a new
 // ~/.bash_profile, for instance, makes bash login shells stop reading
 // ~/.profile — so a file is only created when none exists, and then only the
-// one matching the user's shell.
+// one matching the user's shell. The exception is ~/.zshrc for zsh users.
 func rcTargets(home string) []string {
 	var targets []string
-	for _, rc := range unixRCFiles {
-		path := filepath.Join(home, rc)
+	for _, path := range rcPaths(home) {
 		if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
 			targets = append(targets, path)
 		}
+	}
+	// zsh reads neither ~/.profile nor ~/.bashrc, and creating ~/.zshrc shadows
+	// nothing, so a zsh user always gets one.
+	zshrc := zshrcPath(home)
+	if filepath.Base(os.Getenv("SHELL")) == "zsh" && !slices.Contains(targets, zshrc) {
+		targets = append(targets, zshrc)
 	}
 	if len(targets) == 0 {
 		targets = append(targets, filepath.Join(home, defaultRCFile()))
 	}
 	return targets
+}
+
+// zshrcPath is the .zshrc zsh reads: in $ZDOTDIR when that is set.
+func zshrcPath(home string) string {
+	if dir := os.Getenv("ZDOTDIR"); dir != "" {
+		return filepath.Join(dir, ".zshrc")
+	}
+	return filepath.Join(home, ".zshrc")
+}
+
+// rcPaths are the rc files go-sysproxy may have written, with zsh's .zshrc
+// where zsh looks for it.
+func rcPaths(home string) []string {
+	paths := make([]string, 0, len(unixRCFiles)+1)
+	for _, rc := range unixRCFiles {
+		if rc == ".zshrc" {
+			paths = append(paths, zshrcPath(home))
+			continue
+		}
+		paths = append(paths, filepath.Join(home, rc))
+	}
+	return paths
 }
 
 func defaultRCFile() string {
@@ -116,7 +144,7 @@ func applyRCBlock(body []string, merge bool, yield ...string) error {
 	if written == 0 {
 		return errors.Join(errs...)
 	}
-	return nil
+	return sudoHomeWarning()
 }
 
 func removeRCBlock() error {
@@ -125,8 +153,13 @@ func removeRCBlock() error {
 		return err
 	}
 	var errs []error
-	for _, rc := range unixRCFiles {
-		if err := removeBlockFile(filepath.Join(home, rc)); err != nil {
+	paths := rcPaths(home)
+	// A ~/.zshrc written while ZDOTDIR was unset, or by an older version.
+	if z := filepath.Join(home, ".zshrc"); !slices.Contains(paths, z) {
+		paths = append(paths, z)
+	}
+	for _, path := range paths {
+		if err := removeBlockFile(path); err != nil {
 			errs = append(errs, fmt.Errorf("sysproxy: %w", err))
 		}
 	}

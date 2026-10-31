@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"os/exec"
 	"reflect"
 	"strings"
 )
@@ -16,16 +14,16 @@ import (
 // networksetup; tests replace them to record calls and fake output.
 var (
 	networksetupRun = func(ctx context.Context, args ...string) error {
-		out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", args...).CombinedOutput() //nolint:gosec
+		out, err := systemCommand(ctx, "networksetup", args...).CombinedOutput()
 		return execError("networksetup", nsWhat(args), err, out)
 	}
 	networksetupOutput = func(ctx context.Context, args ...string) ([]byte, error) {
-		out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", args...).Output() //nolint:gosec
+		out, err := systemCommand(ctx, "networksetup", args...).Output()
 		return out, execError("networksetup", nsWhat(args), err, out)
 	}
 	// routeDefault prints the default route; tests replace it.
 	routeDefault = func(ctx context.Context) ([]byte, error) {
-		return exec.CommandContext(normalizeContext(ctx), "route", "-n", "get", "default").Output()
+		return systemCommand(ctx, "route", "-n", "get", "default").Output()
 	}
 )
 
@@ -160,7 +158,7 @@ func getGlobal(ctx context.Context) (string, error) {
 			if i == 2 {
 				scheme = "socks5"
 			}
-			return scheme + "://" + net.JoinHostPort(h, p), nil
+			return scheme + "://" + joinHostPort(h, p), nil
 		}
 	}
 	if pac, ok := readMacPAC(ctx, svc); ok {
@@ -244,7 +242,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 		if err == nil {
 			h, p, ok := parseNSProxyOutput(string(out))
 			if ok && h != "" && p != "0" {
-				*q.dest = q.scheme + "://" + h + ":" + p
+				*q.dest = q.scheme + "://" + joinHostPort(h, p)
 			}
 		}
 	}

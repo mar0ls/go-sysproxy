@@ -396,3 +396,33 @@ func TestIntegrationWindows_ProxyCredentials(t *testing.T) {
 	}
 	want("after WithProxy", "", "", false)
 }
+
+// SetMulti leaves what it is not given alone: a bypass list alone neither turns
+// the proxy on nor drops the PAC URL, and a single kind keeps the other kinds.
+func TestIntegrationWindows_SetMultiKeepsWhatItIsNotGiven(t *testing.T) {
+	requireIntegration(t)
+	itRegRestoreOnCleanup(t)
+	itRegSet(t, "ProxyEnable", "REG_DWORD", "0")
+	itRegSet(t, "ProxyServer", "REG_SZ", "http=a.example.com:1;https=b.example.com:2;socks=c.example.com:3")
+	itRegSet(t, "AutoConfigURL", "REG_SZ", "http://pac.example.com/p.pac")
+	itRegDelete(t, "ProxyOverride")
+
+	if err := SetMulti(ProxyConfig{NoProxy: "x.example.com;<local>"}, ScopeGlobal); err != nil {
+		t.Fatal(err)
+	}
+	st := itRegState(t)
+	if st["ProxyEnable"] != "REG_DWORD|0x0" || st["AutoConfigURL"] != "REG_SZ|http://pac.example.com/p.pac" ||
+		st["ProxyServer"] != "REG_SZ|http=a.example.com:1;https=b.example.com:2;socks=c.example.com:3" ||
+		st["ProxyOverride"] != "REG_SZ|x.example.com;<local>" {
+		t.Errorf("a bypass list alone changed more than the bypass list: %v", st)
+	}
+
+	if err := SetMulti(ProxyConfig{HTTP: "http://new.example.com:9"}, ScopeGlobal); err != nil {
+		t.Fatal(err)
+	}
+	st = itRegState(t)
+	if st["ProxyEnable"] != "REG_DWORD|0x1" || st["AutoConfigURL"] != "<absent>" ||
+		st["ProxyServer"] != "REG_SZ|http=new.example.com:9;https=b.example.com:2;socks=c.example.com:3" {
+		t.Errorf("one kind must replace only itself: %v", st)
+	}
+}

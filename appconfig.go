@@ -58,7 +58,7 @@ func WriteAppConfigContext(ctx context.Context, app AppName, proxyURL string) er
 		return fmt.Errorf("sysproxy: unsupported app %q", app)
 	}
 	logf("WriteAppConfig app=%s url=%s err=%v", app, redactURL(proxyURL), err)
-	return err
+	return withWarning(err, sudoHomeWarning())
 }
 
 // ClearAppConfig removes proxy settings from the tool-specific config for app.
@@ -89,7 +89,7 @@ func ClearAppConfigContext(ctx context.Context, app AppName) error {
 		return fmt.Errorf("sysproxy: unsupported app %q", app)
 	}
 	logf("ClearAppConfig app=%s err=%v", app, err)
-	return err
+	return withWarning(err, sudoHomeWarning())
 }
 
 // ── curl (~/.curlrc) ──────────────────────────────────────────────────────────
@@ -353,6 +353,10 @@ func removeINIKey(path, section, key string) error {
 	return writeLines(path, kept)
 }
 
+// maxConfigLine bounds a single line of a tool config file. bufio.Scanner's
+// default of 64 KiB made Set/Clear fail for good on a file with a longer line.
+const maxConfigLine = 16 << 20
+
 func readLines(path string) ([]string, error) {
 	f, err := os.Open(path) //nolint:gosec
 	if err != nil {
@@ -365,6 +369,7 @@ func readLines(path string) ([]string, error) {
 	}()
 	var lines []string
 	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), maxConfigLine)
 	for sc.Scan() {
 		lines = append(lines, sc.Text())
 	}

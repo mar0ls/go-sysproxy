@@ -176,3 +176,46 @@ func FuzzPSQuote(f *testing.F) {
 		}
 	})
 }
+
+// The default bypass list yields to one the user defined, in whatever form.
+func TestDropIfUserDefined_RecognisesCommonDefinitionForms(t *testing.T) {
+	body := []string{"export http_proxy='http://p:1'", "export no_proxy='localhost,127.0.0.1,::1'", "export NO_PROXY='localhost,127.0.0.1,::1'"}
+	defined := map[string]string{
+		"export":            "export no_proxy=corp.local\n",
+		"export quoted":     "export NO_PROXY='corp.local'\n",
+		"plain assignment":  "no_proxy=corp.local\nexport no_proxy\n",
+		"declare -x":        "declare -x NO_PROXY=corp.local\n",
+		"typeset -x":        "typeset -x no_proxy=corp.local\n",
+		"indented":          "  export no_proxy=corp.local\n",
+		"powershell":        "$env:NO_PROXY = 'corp.local'\n",
+		"after other lines": "alias ll='ls -l'\nexport PATH=$HOME/bin:$PATH\nNO_PROXY=corp.local\n",
+		"typeset -gx":       "typeset -gx no_proxy=corp.local\n",
+		"declare -gx":       "declare -gx NO_PROXY=corp.local\n",
+		"after another var": "export FOO=1 no_proxy=corp.local\n",
+		"quoted with space": "NO_PROXY=\"corp.local, other.local\"\n",
+		"two assignments":   "A=1 no_proxy=corp.local\n",
+		"local":             "local no_proxy=corp.local\n",
+	}
+	for name, content := range defined {
+		got := dropIfUserDefined(body, content, noProxyNames)
+		if len(got) != 1 || !strings.Contains(got[0], "http_proxy") {
+			t.Errorf("%s: body = %q, want only the http_proxy line", name, got)
+		}
+	}
+
+	notDefined := map[string]string{
+		"comment":            "# export no_proxy=corp.local\n",
+		"another variable":   "export no_proxy_old=corp.local\nexport MY_NO_PROXY=x\n",
+		"value mentions it":  "echo no_proxy=corp.local\n",
+		"empty":              "",
+		"only for a command": "no_proxy=corp.local curl https://example.com\n",
+		"export w/o value":   "export no_proxy\n",
+		"unrelated export":   "export FOO=1 BAR=2\n",
+		"managed block only": "# >>> go-sysproxy >>>\nexport no_proxy='x'\n# <<< go-sysproxy <<<\n",
+	}
+	for name, content := range notDefined {
+		if got := dropIfUserDefined(body, content, noProxyNames); len(got) != len(body) {
+			t.Errorf("%s: body = %q, want it unchanged", name, got)
+		}
+	}
+}

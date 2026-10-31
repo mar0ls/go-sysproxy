@@ -80,9 +80,10 @@ func TestPowershellProfiles_PowerShell7OnlyWhenInstalled(t *testing.T) {
 	if err := unsetUser(); err != nil {
 		t.Fatal(err)
 	}
+	// Only go-sysproxy's block was in the files it created, so they are gone.
 	for _, p := range profiles {
-		if b, err := readProfile(p); err != nil || strings.Contains(b, "proxy.example.com") {
-			t.Errorf("%s after unset: %q, %v", p, b, err)
+		if b, err := readProfile(p); !os.IsNotExist(err) {
+			t.Errorf("%s after unset: %q, %v; want it removed", p, b, err)
 		}
 	}
 }

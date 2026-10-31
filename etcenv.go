@@ -123,7 +123,9 @@ func clearEtcEnvironment(path string) error {
 		return err
 	}
 	out := stripEtcOwnedLines(string(data))
-	if out == string(data) {
+	// stripEtcOwnedLines ends the file with a newline; a file that merely lacked
+	// one has nothing to remove and is left alone.
+	if strings.TrimRight(out, "\n") == strings.TrimRight(string(data), "\n") {
 		return nil
 	}
 	return writeFileAtomic(path, []byte(out), 0o644)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	sysproxy "github.com/mar0ls/go-sysproxy"
@@ -20,12 +21,16 @@ Usage:
   sysproxy <command> [flags]
 
 Commands:
-  set   <url>    Set system proxy  (e.g. http://127.0.0.1:8080)
-  get            Print current system proxy URL
+  set   <url|->  Set system proxy  (e.g. http://127.0.0.1:8080)
+  get            Print current system proxy URL (passwords are masked)
   unset          Clear system proxy
-  pac   <url>    Set PAC (Proxy Auto-Config) URL
-  check <url>    Test TCP reachability of a proxy endpoint
+  pac   <url|->  Set PAC (Proxy Auto-Config) URL
+  check <url|->  Test TCP reachability of a proxy endpoint
   version        Show build information
+
+A URL of "-" is read from standard input (first line). Unlike an argument, it
+does not show up in the process list or the shell history, so use it for
+proxies with a password.
 
 Flags:
   --scope  shell|user|global   Scope for set/unset/pac (default: global)
@@ -42,6 +47,7 @@ Exit codes:
 Examples:
   sysproxy set http://127.0.0.1:8080
   sysproxy set http://user:pass@proxy.corp.com:8080 --scope global
+  echo "$PROXY_URL" | sysproxy set -
   sysproxy get --json
   sysproxy unset
   sysproxy pac https://config.example.com/proxy.pac
@@ -59,6 +65,9 @@ var (
 
 	isNonCritical     = sysproxy.IsNonCritical
 	requiresElevation = sysproxy.RequiresElevation
+
+	// stdin is where a URL argument of "-" is read from.
+	stdin io.Reader = os.Stdin
 )
 
 func main() {
@@ -117,23 +126,35 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	switch cmd {
 	case "set":
 		if len(positional) < 1 {
-			return die(stderr, "usage: sysproxy set <url>")
+			return die(stderr, "usage: sysproxy set <url|->")
 		}
-		return cmdSet(positional[0], scope, jsonOut, stdout, stderr)
+		proxyURL, err := urlArg(positional[0])
+		if err != nil {
+			return die(stderr, err.Error())
+		}
+		return cmdSet(proxyURL, scope, jsonOut, stdout, stderr)
 	case "get":
 		return cmdGet(jsonOut, stdout, stderr)
 	case "unset":
 		return cmdUnset(scope, jsonOut, stdout, stderr)
 	case "pac":
 		if len(positional) < 1 {
-			return die(stderr, "usage: sysproxy pac <url>")
+			return die(stderr, "usage: sysproxy pac <url|->")
 		}
-		return cmdPAC(positional[0], scope, jsonOut, stdout, stderr)
+		pacURL, err := urlArg(positional[0])
+		if err != nil {
+			return die(stderr, err.Error())
+		}
+		return cmdPAC(pacURL, scope, jsonOut, stdout, stderr)
 	case "check":
 		if len(positional) < 1 {
-			return die(stderr, "usage: sysproxy check <url>")
+			return die(stderr, "usage: sysproxy check <url|->")
 		}
-		return cmdCheck(positional[0], timeout, jsonOut, stdout, stderr)
+		proxyURL, err := urlArg(positional[0])
+		if err != nil {
+			return die(stderr, err.Error())
+		}
+		return cmdCheck(proxyURL, timeout, jsonOut, stdout, stderr)
 	case "version":
 		_, _ = fmt.Fprintln(stdout, buildinfo.Summary())
 		return 0
@@ -145,6 +166,28 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprint(stderr, usage)
 		return 1
 	}
+}
+
+// maxURLLine bounds what urlArg reads from stdin.
+const maxURLLine = 8 << 10
+
+// urlArg returns arg, or the first line of standard input when arg is "-".
+func urlArg(arg string) (string, error) {
+	if arg != "-" {
+		return arg, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(stdin, maxURLLine+1))
+	if err != nil {
+		return "", fmt.Errorf("reading the URL from stdin: %w", err)
+	}
+	if len(data) > maxURLLine {
+		return "", fmt.Errorf("the URL on stdin is longer than %d bytes", maxURLLine)
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	if line = strings.TrimSpace(line); line == "" {
+		return "", errors.New("no URL on stdin")
+	}
+	return line, nil
 }
 
 func cmdSet(proxyURL string, scope sysproxy.ProxyScope, jsonOut bool, stdout, stderr io.Writer) int {
@@ -194,7 +237,7 @@ func cmdGet(jsonOut bool, stdout, stderr io.Writer) int {
 	// No manual proxy. Tell the user when a PAC URL is active instead, so that
 	// "not set" is not mistaken for "nothing configured".
 	if cfg, cerr := getProxyCfg(ctx); cerr == nil && cfg.PAC != "" {
-		_, _ = fmt.Fprintln(stderr, "proxy not set (PAC active: "+cfg.PAC+"; see 'sysproxy get --json')")
+		_, _ = fmt.Fprintln(stderr, "proxy not set (PAC active: "+redactProxy(cfg.PAC)+"; see 'sysproxy get --json')")
 	} else {
 		_, _ = fmt.Fprintln(stderr, "proxy not set")
 	}
@@ -214,7 +257,7 @@ func cmdPAC(pacURL string, scope sysproxy.ProxyScope, jsonOut bool, stdout, stde
 	defer cancel()
 
 	err := setPAC(ctx, pacURL, scope)
-	return finish("pac", err, jsonOut, map[string]any{"pac": pacURL, "scope": scope.String()}, stdout, stderr)
+	return finish("pac", err, jsonOut, map[string]any{"pac": redactProxy(pacURL), "scope": scope.String()}, stdout, stderr)
 }
 
 // finish reports the result of a set/unset/pac call. A non-critical error means

@@ -314,3 +314,31 @@ func TestFlattenDropsClassification(t *testing.T) {
 		t.Fatalf("message lost: %v", joined)
 	}
 }
+
+// A restore step that did not happen is a failure, whatever its classification
+// (a failed /etc/environment write is reported as non-critical by the Linux
+// backend); and it must never make fn's error look like a warning.
+func TestWithProxy_NonCriticalRestoreErrorIsStillAFailureAndNeverTaints(t *testing.T) {
+	tb := newTrackingBackend(t)
+	tb.restoreErr = &nonCriticalError{err: errors.New("write /etc/environment: input/output error")}
+
+	err := WithProxy(context.Background(), "http://tmp:9999", ScopeGlobal, func(context.Context) error { return nil })
+	if err == nil || IsNonCritical(err) {
+		t.Errorf("err = %v (non-critical=%v); want a hard restore failure", err, IsNonCritical(err))
+	}
+
+	boom := errors.New("boom")
+	err = WithProxy(context.Background(), "http://tmp:9999", ScopeGlobal, func(context.Context) error { return boom })
+	if !errors.Is(err, boom) || IsNonCritical(err) {
+		t.Errorf("err = %v (non-critical=%v); want fn's error and no warning classification", err, IsNonCritical(err))
+	}
+}
+
+func TestWithProxy_HardRestoreFailureIsStillReported(t *testing.T) {
+	tb := newTrackingBackend(t)
+	tb.restoreErr = errors.New("registry refused the write")
+	err := WithProxy(context.Background(), "http://tmp:9999", ScopeGlobal, func(context.Context) error { return nil })
+	if err == nil || IsNonCritical(err) {
+		t.Errorf("err = %v, want a hard restore failure", err)
+	}
+}

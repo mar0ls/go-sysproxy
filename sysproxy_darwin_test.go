@@ -743,3 +743,20 @@ func TestGet_FallsBackToFirstServiceWithoutRoute(t *testing.T) {
 		t.Fatalf("vpn route: %q, %v", got, err)
 	}
 }
+
+// GetConfig must produce URLs that parse, IPv6 literals included.
+func TestGetGlobalConfig_IPv6HostsAreBracketed(t *testing.T) {
+	f := installFakeNetworksetup(t, "Wi-Fi")
+	f.svc["Wi-Fi"].web = nsFakeProxy{enabled: true, host: "::1", port: "8080"}
+	f.svc["Wi-Fi"].socks = nsFakeProxy{enabled: true, host: "fd00::5", port: "1080"}
+	cfg, err := getGlobalConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTP != "http://[::1]:8080" || cfg.SOCKS != "socks5://[fd00::5]:1080" {
+		t.Errorf("GetConfig = %+v", cfg)
+	}
+	if got, err := getGlobal(context.Background()); err != nil || got != cfg.HTTP {
+		t.Errorf("Get = %q, %v; want the same URL as GetConfig", got, err)
+	}
+}

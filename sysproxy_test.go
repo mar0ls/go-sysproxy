@@ -749,3 +749,103 @@ func TestLogger_CoversSetMultiAndSetPACWithoutPasswords(t *testing.T) {
 		}
 	}
 }
+
+// The PAC URL variable set by SetPAC(ScopeShell) is removed again by Unset.
+func TestUnsetScopeShell_ClearsAutoproxy(t *testing.T) {
+	setTestHome(t)
+	t.Cleanup(unsetEnvVars)
+	if err := SetPAC("https://pac.example.com/p.pac", ScopeShell); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("AUTOPROXY") == "" {
+		t.Fatal("SetPAC did not set AUTOPROXY")
+	}
+	if err := Unset(ScopeShell); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := os.LookupEnv("AUTOPROXY"); ok {
+		t.Errorf("AUTOPROXY still set to %q after Unset", v)
+	}
+}
+
+// Every variable WithProxy snapshots is one that Unset clears, so the two
+// lists cannot drift apart.
+func TestUnsetEnvVars_ClearsEveryManagedVariable(t *testing.T) {
+	for _, k := range proxyEnvNames {
+		t.Setenv(k, "x")
+	}
+	unsetEnvVars()
+	for _, k := range proxyEnvNames {
+		if v, ok := os.LookupEnv(k); ok {
+			t.Errorf("%s still set to %q", k, v)
+		}
+	}
+}
+
+// Internationalised host names are written in punycode: profile files and code
+// pages do not all read non-ASCII text back unchanged. The error says so.
+func TestValidateNoProxy_NonASCIINamesPointToPunycode(t *testing.T) {
+	for _, ok := range []string{"*.xn--mnchen-3ya.de", "xn--r8jz45g.jp,localhost"} {
+		if err := validateNoProxy(ok); err != nil {
+			t.Errorf("validateNoProxy(%q) = %v, want ok", ok, err)
+		}
+	}
+	for _, bad := range []string{"*.münchen.de", "例え.jp", "пример.рф"} {
+		err := validateNoProxy(bad)
+		if err == nil || !strings.Contains(err.Error(), "punycode") {
+			t.Errorf("validateNoProxy(%q) = %v, want a punycode hint", bad, err)
+		}
+	}
+	for _, bad := range []string{"a\u202eb", "a\u200bb", "a\u2028b", "x\u0085y", "a'b", "a\"b", "a$b"} {
+		if err := validateNoProxy(bad); err == nil {
+			t.Errorf("validateNoProxy(%q) accepted a control, format or shell character", bad)
+		}
+	}
+}
+
+// Every variable the env setters write is one Unset clears and WithProxy
+// snapshots; a new variable cannot be added to one list only.
+func TestEnvSetters_OnlyTouchManagedVariables(t *testing.T) {
+	managed := map[string]bool{}
+	for _, k := range proxyEnvNames {
+		managed[k] = true
+	}
+	snap := func() map[string]string {
+		m := map[string]string{}
+		for _, kv := range os.Environ() {
+			k, v, _ := strings.Cut(kv, "=")
+			m[k] = v
+		}
+		return m
+	}
+	for name, set := range map[string]func(){
+		"setEnvVars":    func() { setEnvVars("http://p:1") },
+		"setEnvVarsPAC": func() { setEnvVarsPAC("http://p/x.pac") },
+		"setEnvVarsMulti": func() {
+			setEnvVarsMulti(ProxyConfig{HTTP: "http://a:1", HTTPS: "http://b:2", SOCKS: "socks5://c:3", NoProxy: "x"})
+		},
+	} {
+		before := snap()
+		set()
+		for k, v := range snap() {
+			if old, ok := before[k]; (!ok || old != v) && !managed[k] {
+				t.Errorf("%s set %s, which is not in proxyEnvNames", name, k)
+			}
+		}
+		unsetEnvVars()
+	}
+}
+
+func TestJoinHostPort(t *testing.T) {
+	cases := [][3]string{
+		{"proxy.example.com", "8080", "proxy.example.com:8080"},
+		{"::1", "8080", "[::1]:8080"},
+		{"[::1]", "8080", "[::1]:8080"}, // already bracketed: no second pair
+		{"fd00::5", "1080", "[fd00::5]:1080"},
+	}
+	for _, c := range cases {
+		if got := joinHostPort(c[0], c[1]); got != c[2] {
+			t.Errorf("joinHostPort(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}

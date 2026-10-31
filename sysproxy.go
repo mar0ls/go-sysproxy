@@ -303,7 +303,10 @@ func withState(ctx context.Context, scope ProxyScope, fn func(context.Context) e
 		defer cancel()
 		if rerr := restore(rctx); rerr != nil {
 			logf("WithProxy: restore failed: %v", rerr)
-			err = combine(err, fmt.Errorf("sysproxy: restoring the previous proxy state failed: %w", rerr))
+			// A restore step that did not happen is a failure whatever its
+			// classification; unclassified keeps a non-critical one from making
+			// fn's error (or this one) look like a warning to IsNonCritical.
+			err = combine(err, fmt.Errorf("sysproxy: restoring the previous proxy state failed: %w", unclassified(rerr)))
 		}
 	}()
 
