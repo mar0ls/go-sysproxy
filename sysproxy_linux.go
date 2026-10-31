@@ -191,7 +191,7 @@ func unsetGlobal(ctx context.Context) error {
 }
 
 func getGlobal(ctx context.Context) (string, error) {
-	if isAvailable("gsettings") {
+	if gnomeUsable(ctx) {
 		if url, err := getGlobalGnome(ctx); err == nil {
 			return url, nil
 		} else if !errors.Is(err, ErrProxyNotSet) {
@@ -257,7 +257,7 @@ func parseGsettingsArray(raw string) string {
 }
 
 func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
-	if isAvailable("gsettings") {
+	if gnomeUsable(ctx) {
 		cfg, err := getGlobalConfigGnome(ctx)
 		if err == nil {
 			return cfg, nil

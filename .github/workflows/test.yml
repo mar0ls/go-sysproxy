@@ -87,7 +87,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          # golangci-lint cannot read export data of a Go newer than the one it was
+          # built with, so lint with the previous release rather than 'stable'.
+          go-version: 'oldstable'
           cache: false
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v7

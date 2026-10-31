@@ -257,6 +257,22 @@ func TestLinuxGsettingsWithoutGnomeSchemaIsSkipped(t *testing.T) {
 	}
 }
 
+// F-08: reading with a bare gsettings binary (no GNOME schema, as on a CI
+// runner) is "not set", not a failure: the CLI would otherwise exit 1.
+func TestLinuxGetWithoutGnomeSchemaIsNotSet(t *testing.T) {
+	f := installFakeDesktop(t, "gsettings")
+	script := "#!/bin/sh\n[ \"$1\" = list-keys ] && exit 1\necho \"No such schema\" >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(f.dir, "bin", "gsettings"), []byte(script), 0o755); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	if _, err := getGlobal(context.Background()); !errors.Is(err, ErrProxyNotSet) {
+		t.Errorf("getGlobal = %v, want ErrProxyNotSet", err)
+	}
+	if _, err := getGlobalConfig(context.Background()); !errors.Is(err, ErrProxyNotSet) {
+		t.Errorf("getGlobalConfig = %v, want ErrProxyNotSet", err)
+	}
+}
+
 // F-06 analogue on Linux and F-10: WithProxy restores GNOME, KDE and
 // /etc/environment exactly.
 func TestLinuxWithProxy_RestoresExactly(t *testing.T) {

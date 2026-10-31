@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -203,6 +204,10 @@ func TestWithProxy_InvalidInputsDoNotSnapshot(t *testing.T) {
 	}
 }
 
+// caseSensitiveEnv is false on Windows, where http_proxy and HTTP_PROXY are the
+// same variable.
+var caseSensitiveEnv = runtime.GOOS != "windows"
+
 // F-11: the process environment is restored exactly — variables that were set
 // come back with their values, variables that were not set are unset again.
 func TestWithProxy_RestoresEnvironmentExactly(t *testing.T) {
@@ -215,7 +220,9 @@ func TestWithProxy_RestoresEnvironmentExactly(t *testing.T) {
 			}
 			t.Setenv("HTTP_PROXY", "http://preexisting:1")
 			t.Setenv("NO_PROXY", "mine.internal")
-			t.Setenv("http_proxy", "") // set, but empty: must stay set-and-empty
+			if caseSensitiveEnv {
+				t.Setenv("http_proxy", "") // set, but empty: must stay set-and-empty
+			}
 
 			var inside string
 			err := WithProxy(context.Background(), "http://tmp:9999", scope, func(context.Context) error {
@@ -234,10 +241,14 @@ func TestWithProxy_RestoresEnvironmentExactly(t *testing.T) {
 			if got := os.Getenv("NO_PROXY"); got != "mine.internal" {
 				t.Errorf("NO_PROXY after = %q, want mine.internal", got)
 			}
-			if v, ok := os.LookupEnv("http_proxy"); !ok || v != "" {
+			if v, ok := os.LookupEnv("http_proxy"); caseSensitiveEnv && (!ok || v != "") {
 				t.Errorf("http_proxy after = %q (set=%v), want set-and-empty", v, ok)
 			}
-			for _, k := range []string{"HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "no_proxy", "AUTOPROXY"} {
+			unset := []string{"HTTPS_PROXY", "ALL_PROXY", "AUTOPROXY"}
+			if caseSensitiveEnv {
+				unset = append(unset, "https_proxy", "all_proxy", "no_proxy")
+			}
+			for _, k := range unset {
 				if v, ok := os.LookupEnv(k); ok {
 					t.Errorf("%s = %q after WithProxy, want unset", k, v)
 				}

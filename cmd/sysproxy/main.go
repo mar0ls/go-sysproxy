@@ -154,6 +154,12 @@ func cmdSet(proxyURL string, scope sysproxy.ProxyScope, jsonOut bool, stdout, st
 	return finish("set", err, jsonOut, map[string]any{"proxy": redactProxy(proxyURL), "scope": scope.String()}, stdout, stderr)
 }
 
+// isNotSet reports whether err means "no proxy configured" rather than a failure
+// (Windows reports a disabled proxy as ErrProxyNotEnabled).
+func isNotSet(err error) bool {
+	return errors.Is(err, sysproxy.ErrProxyNotSet) || errors.Is(err, sysproxy.ErrProxyNotEnabled)
+}
+
 func cmdGet(jsonOut bool, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -161,7 +167,7 @@ func cmdGet(jsonOut bool, stdout, stderr io.Writer) int {
 	if jsonOut {
 		cfg, err := getProxyCfg(ctx)
 		switch {
-		case err != nil && !errors.Is(err, sysproxy.ErrProxyNotSet):
+		case err != nil && !isNotSet(err):
 			printJSON(stdout, map[string]any{"ok": false, "error": err.Error()})
 			return 1
 		case err != nil || cfg == (sysproxy.ProxyConfig{}):
@@ -178,7 +184,7 @@ func cmdGet(jsonOut bool, stdout, stderr io.Writer) int {
 	case err == nil:
 		_, _ = fmt.Fprintln(stdout, url)
 		return 0
-	case !errors.Is(err, sysproxy.ErrProxyNotSet):
+	case !isNotSet(err):
 		_, _ = fmt.Fprintln(stderr, "error: get failed: "+err.Error())
 		return 1
 	}

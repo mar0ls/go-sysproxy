@@ -159,6 +159,17 @@ func TestGetJSON_NotSetAndErrors(t *testing.T) {
 	}
 }
 
+// Windows reports a disabled proxy as ErrProxyNotEnabled; that is "not set", not a failure.
+func TestGet_ProxyNotEnabledIsNotSet(t *testing.T) {
+	stubGet(t, "", sysproxy.ErrProxyNotEnabled, sysproxy.ProxyConfig{}, sysproxy.ErrProxyNotEnabled)
+	if code, _, _ := runCLI("get"); code != 2 {
+		t.Errorf("get: code=%d, want 2", code)
+	}
+	if code, _, _ := runCLI("get", "--json"); code != 2 {
+		t.Errorf("get --json: code=%d, want 2", code)
+	}
+}
+
 func TestGetText(t *testing.T) {
 	stubGet(t, "http://127.0.0.1:8080", nil, sysproxy.ProxyConfig{}, nil)
 	if code, stdout, _ := runCLI("get"); code != 0 || strings.TrimSpace(stdout) != "http://127.0.0.1:8080" {
