@@ -6,70 +6,204 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
 )
 
-func runGsettings(ctx context.Context, args ...string) error {
-	return exec.CommandContext(normalizeContext(ctx), "gsettings", args...).Run() //nolint:gosec
+// etcEnvironmentPath is a variable so tests can point it at a temp file.
+var etcEnvironmentPath = "/etc/environment"
+
+// etcEnvironmentResult classifies an /etc/environment error: lack of privileges
+// is reported as RequiresElevation, anything else as non-critical (the desktop
+// settings were already applied).
+func etcEnvironmentResult(err error) error {
+	if err == nil || IsNonCritical(err) {
+		return err
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return asElevationError(fmt.Errorf("sysproxy: %s write failed (root required for system-wide effect): %w", etcEnvironmentPath, err))
+	}
+	return &nonCriticalError{err: err}
 }
 
-func runKwriteconfig5(ctx context.Context, args ...string) error {
-	return exec.CommandContext(normalizeContext(ctx), "kwriteconfig5", args...).Run() //nolint:gosec
+func runGsettings(ctx context.Context, args ...string) error {
+	out, err := exec.CommandContext(normalizeContext(ctx), "gsettings", args...).CombinedOutput() //nolint:gosec
+	return execError("gsettings", gsWhat(args), err, out)
+}
+
+func runKwriteconfig(ctx context.Context, args ...string) error {
+	tool := kwriteconfigBinary()
+	if tool == "" {
+		return fmt.Errorf("%w: kwriteconfig6/kwriteconfig5", ErrToolMissing)
+	}
+	out, err := exec.CommandContext(normalizeContext(ctx), tool, args...).CombinedOutput() //nolint:gosec // tool is a fixed allowlist
+	return execError(tool, kdeWhat(args), err, out)
+}
+
+// gsWhat / kdeWhat describe a call for an error message without its value
+// argument, which may be a proxy URL with credentials.
+func gsWhat(args []string) string {
+	if len(args) >= 3 {
+		return strings.Join(args[:3], " ")
+	}
+	return strings.Join(args, " ")
+}
+
+func kdeWhat(args []string) string {
+	for i, a := range args {
+		if a == "--key" && i+1 < len(args) {
+			return "--key " + args[i+1]
+		}
+	}
+	return ""
+}
+
+const gnomeProxySchema = "org.gnome.system.proxy"
+
+// gnomeUsable reports whether gsettings exists and knows the GNOME proxy
+// schema. gsettings alone is not enough: it ships with glib on KDE systems too.
+func gnomeUsable(ctx context.Context) bool {
+	return isAvailable("gsettings") && runGsettings(ctx, "list-keys", gnomeProxySchema) == nil
+}
+
+func kdeWritable() bool { return kwriteconfigBinary() != "" }
+
+// kdeSet writes one key of the "Proxy Settings" group of kioslaverc.
+func kdeSet(ctx context.Context, key, value string) error {
+	return runKwriteconfig(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", key, value)
+}
+
+// steps collects the failures of a sequence of backend steps.
+type steps struct {
+	ctx  context.Context
+	errs []error
+}
+
+func (s *steps) gs(args ...string) {
+	if err := runGsettings(s.ctx, args...); err != nil {
+		s.errs = append(s.errs, err)
+	}
+}
+
+func (s *steps) kde(key, value string) {
+	if err := kdeSet(s.ctx, key, value); err != nil {
+		s.errs = append(s.errs, err)
+	}
+}
+
+// verify reads a gsettings key back and compares it with want. "gsettings set"
+// exits 0 even when no dconf service is reachable (no D-Bus session bus, e.g.
+// over plain SSH or sudo): it then falls back to a throw-away in-memory
+// backend and the change vanishes with the process. Only a read-back from a
+// new process proves the value was stored.
+func (s *steps) verify(schema, key, want string) {
+	out, err := exec.CommandContext(normalizeContext(s.ctx), "gsettings", "get", schema, key).Output() //nolint:gosec
+	got := unquoteGVariant(string(out))
+	if err != nil || got != unquoteGVariant(want) {
+		s.errs = append(s.errs, fmt.Errorf(
+			"sysproxy: gsettings accepted %s %s=%s but it reads back as %q: the setting was not stored "+
+				"(is a D-Bus session bus and the dconf service reachable? run it from the desktop session, not via plain sudo/ssh)",
+			schema, key, want, got))
+	}
+}
+
+func unquoteGVariant(v string) string { return strings.Trim(strings.TrimSpace(v), "'") }
+
+// finish combines the desktop failures with the /etc/environment outcome etcErr
+// (nil when the operation does not touch that file). desktop says whether any
+// desktop tool took part.
+//
+//   - a desktop step failed: hard error (the /etc/environment problem is folded
+//     in as text so the result cannot be mistaken for a warning);
+//   - only /etc/environment failed: that warning, as non-critical;
+//   - nothing could run at all: ErrToolMissing.
+func (s *steps) finish(desktop bool, etcErr error, what string) error {
+	if len(s.errs) > 0 {
+		errs := s.errs
+		if etcErr != nil {
+			errs = append(errs, flatten(etcErr))
+		}
+		return errors.Join(errs...)
+	}
+	if !desktop {
+		if etcErr != nil {
+			return fmt.Errorf("%w: neither gsettings (GNOME) nor kwriteconfig6/5 (KDE) found, and %s: %v", ErrToolMissing, what, etcErr)
+		}
+		return nil
+	}
+	return etcErr
+}
+
+// noDesktopTool is the error for operations that only have desktop settings to
+// change when none of the tools exists.
+func noDesktopTool() error {
+	return fmt.Errorf("%w: neither gsettings (GNOME) nor kwriteconfig6/5 (KDE) found", ErrToolMissing)
 }
 
 func setGlobal(ctx context.Context, p *proxy) error {
-	if isAvailable("gsettings") {
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "mode", "manual")
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy.http", "host", p.host)
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy.http", "port", p.port)
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy.https", "host", p.host)
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy.https", "port", p.port)
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy.socks", "host", p.host)
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy.socks", "port", p.port)
-	}
-	if isAvailable("kwriteconfig5") {
-		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "1")
-		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpProxy", p.rawURL)
-		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpsProxy", p.rawURL)
-		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ftpProxy", p.rawURL)
-		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "socksProxy", p.rawURL)
-	}
-	if err := writeEtcEnvironment("/etc/environment", p.rawURL); err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return asElevationError(err)
+	st := &steps{ctx: ctx}
+	gnome, kde := gnomeUsable(ctx), kdeWritable()
+	// The scheme decides the field: an HTTP proxy goes to http/https(/ftp), a
+	// SOCKS one to socks only. The other fields are cleared so the result is
+	// exactly what was asked for, not a mix with an earlier Set.
+	if gnome {
+		st.gs("set", gnomeProxySchema, "mode", "manual")
+		for _, proto := range []string{"http", "https", "socks"} {
+			schema := gnomeProxySchema + "." + proto
+			if (proto == "socks") == p.isSOCKS() {
+				st.gs("set", schema, "host", p.host)
+				st.gs("set", schema, "port", p.port)
+			} else {
+				st.gs("set", schema, "host", "")
+				st.gs("set", schema, "port", "0")
+			}
 		}
-		return &nonCriticalError{err: err}
+		st.verify(gnomeProxySchema, "mode", "manual")
 	}
-	return nil
+	if kde {
+		st.kde("ProxyType", "1")
+		for _, key := range []string{"httpProxy", "httpsProxy", "ftpProxy", "socksProxy"} {
+			if (key == "socksProxy") == p.isSOCKS() {
+				st.kde(key, p.rawURL)
+			} else {
+				st.kde(key, "")
+			}
+		}
+	}
+	etcErr := etcEnvironmentResult(writeEtcEnvironment(etcEnvironmentPath, p.rawURL))
+	return st.finish(gnome || kde, etcErr, etcEnvironmentPath+" could not be written")
 }
 
 func unsetGlobal(ctx context.Context) error {
-	if isAvailable("gsettings") {
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "mode", "none")
+	st := &steps{ctx: ctx}
+	gnome, kde := gnomeUsable(ctx), kdeWritable()
+	if gnome {
+		st.gs("set", gnomeProxySchema, "mode", "none")
+		st.verify(gnomeProxySchema, "mode", "none")
 	}
-	if isAvailable("kwriteconfig5") {
-		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0")
-	}
-	if err := clearEtcEnvironment("/etc/environment"); err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return asElevationError(err)
+	if kde {
+		st.kde("ProxyType", "0")
+		// ProxyType=0 already disables the proxy; the stored URLs may carry
+		// credentials, so they are not left behind either.
+		for _, key := range []string{"httpProxy", "httpsProxy", "ftpProxy", "socksProxy", "Proxy Config Script"} {
+			st.kde(key, "")
 		}
-		return &nonCriticalError{err: err}
 	}
-	return nil
+	etcErr := etcEnvironmentResult(clearEtcEnvironment(etcEnvironmentPath))
+	return st.finish(gnome || kde, etcErr, etcEnvironmentPath+" could not be cleared")
 }
 
 func getGlobal(ctx context.Context) (string, error) {
-	if isAvailable("gsettings") {
+	if gnomeUsable(ctx) {
 		if url, err := getGlobalGnome(ctx); err == nil {
 			return url, nil
 		} else if !errors.Is(err, ErrProxyNotSet) {
 			return "", err
 		}
 	}
-	if isAvailable("kreadconfig5") || isAvailable("kreadconfig6") {
+	if kreadconfigBinary() != "" {
 		if url, err := getGlobalKDE(ctx); err == nil {
 			return url, nil
 		} else if !errors.Is(err, ErrProxyNotSet) {
@@ -88,17 +222,22 @@ func getGlobalGnome(ctx context.Context) (string, error) {
 	if mode != "manual" {
 		return "", ErrProxyNotSet
 	}
-	host, err1 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy.http", "host").Output()
-	port, err2 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy.http", "port").Output()
-	if err1 != nil || err2 != nil {
-		return "", fmt.Errorf("sysproxy: cannot read proxy settings")
+	// First usable kind wins: http, https, then socks (so a proxy set from a
+	// socks5:// URL can be read back).
+	for _, q := range []struct{ proto, scheme string }{{"http", "http"}, {"https", "http"}, {"socks", "socks5"}} {
+		schema := gnomeProxySchema + "." + q.proto
+		host, err1 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", schema, "host").Output() //nolint:gosec
+		port, err2 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", schema, "port").Output() //nolint:gosec
+		if err1 != nil || err2 != nil {
+			return "", fmt.Errorf("sysproxy: cannot read proxy settings")
+		}
+		h := strings.Trim(strings.TrimSpace(string(host)), "'")
+		p := strings.TrimSpace(string(port))
+		if h != "" && p != "0" {
+			return q.scheme + "://" + net.JoinHostPort(h, p), nil
+		}
 	}
-	h := strings.Trim(strings.TrimSpace(string(host)), "'")
-	p := strings.TrimSpace(string(port))
-	if h == "" || p == "0" {
-		return "", ErrProxyNotSet
-	}
-	return "http://" + h + ":" + p, nil
+	return "", ErrProxyNotSet
 }
 
 // gsettingsField reads a single string field from a gsettings schema.
@@ -123,7 +262,7 @@ func parseGsettingsArray(raw string) string {
 }
 
 func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
-	if isAvailable("gsettings") {
+	if gnomeUsable(ctx) {
 		cfg, err := getGlobalConfigGnome(ctx)
 		if err == nil {
 			return cfg, nil
@@ -132,7 +271,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 			return ProxyConfig{}, err
 		}
 	}
-	if isAvailable("kreadconfig5") || isAvailable("kreadconfig6") {
+	if kreadconfigBinary() != "" {
 		cfg, err := getGlobalConfigKDE(ctx)
 		if err == nil {
 			return cfg, nil
@@ -186,52 +325,208 @@ func getGlobalConfigGnome(ctx context.Context) (ProxyConfig, error) {
 }
 
 func setGlobalPAC(ctx context.Context, pacURL string) error {
-	if isAvailable("gsettings") {
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "mode", "auto")
-		_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "autoconfig-url", pacURL)
+	st := &steps{ctx: ctx}
+	gnome, kde := gnomeUsable(ctx), kdeWritable()
+	if !gnome && !kde {
+		return noDesktopTool()
 	}
-	if isAvailable("kwriteconfig5") {
-		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "2")
-		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "Proxy Config Script", pacURL)
+	if gnome {
+		st.gs("set", gnomeProxySchema, "mode", "auto")
+		st.gs("set", gnomeProxySchema, "autoconfig-url", pacURL)
+		st.verify(gnomeProxySchema, "mode", "auto")
 	}
-	return nil
+	if kde {
+		st.kde("ProxyType", "2")
+		st.kde("Proxy Config Script", pacURL)
+	}
+	return st.finish(true, nil, "")
 }
 
 func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
-	if isAvailable("gsettings") {
-		if cfg.HTTP != "" {
-			_ = runGsettings(ctx, "set", "org.gnome.system.proxy", "mode", "manual")
-			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.http", "host", hostFromURL(cfg.HTTP))
-			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.http", "port", portFromURL(cfg.HTTP))
+	st := &steps{ctx: ctx}
+	gnome, kde := gnomeUsable(ctx), kdeWritable()
+	if !gnome && !kde {
+		return noDesktopTool()
+	}
+	anyProxy := cfg.HTTP != "" || cfg.HTTPS != "" || cfg.SOCKS != ""
+	bypass := splitNoProxy(cfg.NoProxy)
+	if gnome {
+		if anyProxy {
+			st.gs("set", gnomeProxySchema, "mode", "manual")
 		}
-		if cfg.HTTPS != "" {
-			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.https", "host", hostFromURL(cfg.HTTPS))
-			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.https", "port", portFromURL(cfg.HTTPS))
+		for _, f := range []struct{ proto, url string }{{"http", cfg.HTTP}, {"https", cfg.HTTPS}, {"socks", cfg.SOCKS}} {
+			if f.url == "" {
+				continue
+			}
+			host, port := endpointFromURL(f.url)
+			st.gs("set", gnomeProxySchema+"."+f.proto, "host", host)
+			st.gs("set", gnomeProxySchema+"."+f.proto, "port", port)
 		}
-		if cfg.SOCKS != "" {
-			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.socks", "host", hostFromURL(cfg.SOCKS))
-			_ = runGsettings(ctx, "set", "org.gnome.system.proxy.socks", "port", portFromURL(cfg.SOCKS))
+		if len(bypass) > 0 {
+			st.gs("set", gnomeProxySchema, "ignore-hosts", gvariantStrings(bypass))
+		}
+		if anyProxy {
+			st.verify(gnomeProxySchema, "mode", "manual")
 		}
 	}
-	if isAvailable("kwriteconfig5") {
-		_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "1")
+	if kde {
+		if anyProxy {
+			st.kde("ProxyType", "1")
+		}
 		if cfg.HTTP != "" {
-			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpProxy", cfg.HTTP)
+			st.kde("httpProxy", cfg.HTTP)
 		}
 		if cfg.HTTPS != "" {
-			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpsProxy", cfg.HTTPS)
+			st.kde("httpsProxy", cfg.HTTPS)
 		}
 		if cfg.SOCKS != "" {
-			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "socksProxy", cfg.SOCKS)
+			st.kde("socksProxy", cfg.SOCKS)
 		}
-		if cfg.NoProxy != "" {
-			_ = runKwriteconfig5(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "NoProxyFor", cfg.NoProxy)
+		if len(bypass) > 0 {
+			st.kde("NoProxyFor", strings.Join(bypass, ","))
 		}
 	}
-	return nil
+	return st.finish(true, nil, "")
 }
 
-// linuxBackend implements globalBackend using gsettings/kwriteconfig5 and /etc/environment.
+// gvariantStrings formats list as a GVariant string array, the form gsettings
+// takes for ignore-hosts. validateNoProxy has already ruled out quotes and
+// backslashes, so plain single-quoting is safe.
+func gvariantStrings(list []string) string {
+	return "['" + strings.Join(list, "', '") + "']"
+}
+
+// gnomeKeys are the gsettings keys the package writes (plus ignore-hosts, the
+// bypass list). WithProxy saves and restores them verbatim, in GVariant text.
+var gnomeKeys = []struct{ schema, key string }{
+	{gnomeProxySchema, "mode"},
+	{gnomeProxySchema, "autoconfig-url"},
+	{gnomeProxySchema, "ignore-hosts"},
+	{gnomeProxySchema + ".http", "host"},
+	{gnomeProxySchema + ".http", "port"},
+	{gnomeProxySchema + ".https", "host"},
+	{gnomeProxySchema + ".https", "port"},
+	{gnomeProxySchema + ".socks", "host"},
+	{gnomeProxySchema + ".socks", "port"},
+}
+
+// kdeKeys are the kioslaverc "Proxy Settings" keys the package writes.
+var kdeKeys = []string{
+	"ProxyType", "httpProxy", "httpsProxy", "ftpProxy", "socksProxy",
+	"NoProxyFor", "Proxy Config Script",
+}
+
+// keyValue is one saved setting: a gsettings "schema key" or a kioslaverc key.
+type keyValue struct {
+	key, value string
+}
+
+// etcState is /etc/environment as WithProxy found it.
+type etcState struct {
+	exists bool
+	data   []byte
+	mode   os.FileMode
+}
+
+func readEtcState(path string) (etcState, error) {
+	fi, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return etcState{}, nil
+	}
+	if err != nil {
+		return etcState{}, err
+	}
+	data, err := os.ReadFile(path) //nolint:gosec
+	if err != nil {
+		return etcState{}, err
+	}
+	return etcState{exists: true, data: data, mode: fi.Mode().Perm()}, nil
+}
+
+// restoreEtcState puts /etc/environment back, writing only if it changed.
+func restoreEtcState(path string, want etcState) error {
+	now, err := readEtcState(path)
+	if err != nil {
+		return err
+	}
+	if now.exists == want.exists && string(now.data) == string(want.data) {
+		return nil
+	}
+	if !want.exists {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return writeFileAtomic(path, want.data, want.mode)
+}
+
+func kdeRead(ctx context.Context, key string) (string, error) {
+	tool := kreadconfigBinary()
+	if tool == "" {
+		return "", ErrToolMissing
+	}
+	out, err := exec.CommandContext(normalizeContext(ctx), tool, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", key).Output() //nolint:gosec
+	if err != nil {
+		return "", execError(tool, "--key "+key, err, nil)
+	}
+	return strings.TrimRight(string(out), "\n"), nil
+}
+
+func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
+	var gs []keyValue // value is the raw GVariant text
+	if gnomeUsable(ctx) {
+		for _, k := range gnomeKeys {
+			out, err := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", k.schema, k.key).Output() //nolint:gosec
+			if err != nil {
+				return nil, execError("gsettings", "get "+k.schema+" "+k.key, err, nil)
+			}
+			gs = append(gs, keyValue{k.schema + " " + k.key, strings.TrimSpace(string(out))})
+		}
+	}
+	var kde []keyValue
+	if kdeWritable() && kreadconfigBinary() != "" {
+		for _, key := range kdeKeys {
+			v, err := kdeRead(ctx, key)
+			if err != nil {
+				return nil, err
+			}
+			kde = append(kde, keyValue{key, v})
+		}
+	}
+	etc, err := readEtcState(etcEnvironmentPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return func(ctx context.Context) error {
+		st := &steps{ctx: ctx}
+		for _, v := range gs {
+			schema, key, _ := strings.Cut(v.key, " ")
+			st.gs("set", schema, key, v.value)
+			if schema == gnomeProxySchema && key == "mode" {
+				st.verify(schema, key, v.value)
+			}
+		}
+		for _, v := range kde {
+			if v.value == "" {
+				st.errs = appendIf(st.errs, runKwriteconfig(ctx, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", v.key, "--delete"))
+				continue
+			}
+			st.kde(v.key, v.value)
+		}
+		return st.finish(true, etcEnvironmentResult(restoreEtcState(etcEnvironmentPath, etc)), etcEnvironmentPath+" could not be restored")
+	}, nil
+}
+
+func appendIf(errs []error, err error) []error {
+	if err != nil {
+		return append(errs, err)
+	}
+	return errs
+}
+
+// linuxBackend implements globalBackend using gsettings/kwriteconfig6|5 and /etc/environment.
 type linuxBackend struct{}
 
 func (linuxBackend) SetGlobal(ctx context.Context, p *proxy) error { return setGlobal(ctx, p) }
@@ -245,56 +540,8 @@ func (linuxBackend) SetGlobalMulti(ctx context.Context, c ProxyConfig) error {
 	return setGlobalMulti(ctx, c)
 }
 
+func (linuxBackend) SnapshotGlobal(ctx context.Context) (restoreFunc, error) {
+	return snapshotGlobal(ctx)
+}
+
 func init() { activeBackend = linuxBackend{} }
-
-func writeEtcEnvironment(path, proxyURL string) error {
-	data, err := os.ReadFile(path) //nolint:gosec
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	proxyKeys := map[string]bool{
-		"http_proxy": true, "HTTP_PROXY": true,
-		"https_proxy": true, "HTTPS_PROXY": true,
-		"all_proxy": true, "ALL_PROXY": true,
-		"no_proxy": true, "NO_PROXY": true,
-	}
-	var kept []string
-	for _, line := range strings.Split(string(data), "\n") {
-		key := strings.SplitN(line, "=", 2)[0]
-		if !proxyKeys[strings.TrimSpace(key)] {
-			kept = append(kept, line)
-		}
-	}
-	kept = append(kept,
-		"http_proxy="+proxyURL, "HTTP_PROXY="+proxyURL,
-		"https_proxy="+proxyURL, "HTTPS_PROXY="+proxyURL,
-		"all_proxy="+proxyURL, "ALL_PROXY="+proxyURL,
-		"no_proxy=localhost,127.0.0.1,::1",
-		"NO_PROXY=localhost,127.0.0.1,::1",
-	)
-	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o644); err != nil { //nolint:gosec
-		return fmt.Errorf("sysproxy: %s write failed (root required for system-wide effect): %w", path, err)
-	}
-	return nil
-}
-
-func clearEtcEnvironment(path string) error {
-	data, err := os.ReadFile(path) //nolint:gosec
-	if err != nil {
-		return nil // file absent is fine
-	}
-	proxyKeys := map[string]bool{
-		"http_proxy": true, "HTTP_PROXY": true,
-		"https_proxy": true, "HTTPS_PROXY": true,
-		"all_proxy": true, "ALL_PROXY": true,
-		"no_proxy": true, "NO_PROXY": true,
-	}
-	var kept []string
-	for _, line := range strings.Split(string(data), "\n") {
-		key := strings.SplitN(line, "=", 2)[0]
-		if !proxyKeys[strings.TrimSpace(key)] {
-			kept = append(kept, line)
-		}
-	}
-	return os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o644) //nolint:gosec
-}

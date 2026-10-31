@@ -12,14 +12,19 @@ import (
 const kdeProxyGroup = "Proxy Settings"
 
 // kreadconfigBinary returns the name of the kreadconfig tool available in PATH,
-// preferring kreadconfig5 (Plasma 5) and falling back to kreadconfig6 (Plasma 6).
+// preferring kreadconfig6 (Plasma 6) and falling back to kreadconfig5 (Plasma 5).
 // Returns "" when neither is installed.
-func kreadconfigBinary() string {
-	if isAvailable("kreadconfig5") {
-		return "kreadconfig5"
-	}
-	if isAvailable("kreadconfig6") {
-		return "kreadconfig6"
+func kreadconfigBinary() string { return firstAvailable("kreadconfig6", "kreadconfig5") }
+
+// kwriteconfigBinary is the write counterpart of kreadconfigBinary. Plasma 5 and
+// 6 keep the same kioslaverc file, so either tool works on either.
+func kwriteconfigBinary() string { return firstAvailable("kwriteconfig6", "kwriteconfig5") }
+
+func firstAvailable(names ...string) string {
+	for _, n := range names {
+		if isAvailable(n) {
+			return n
+		}
 	}
 	return ""
 }
@@ -55,8 +60,14 @@ func getGlobalKDE(ctx context.Context) (string, error) {
 		}
 		return "", ErrProxyNotSet
 	}
-	if url := kreadKey(ctx, "httpProxy"); url != "" {
-		return normalizeKDEProxyURL(url), nil
+	for _, key := range []string{"httpProxy", "httpsProxy"} {
+		if url := kreadKey(ctx, key); url != "" {
+			return normalizeKDEProxyURL(url), nil
+		}
+	}
+	// SOCKS last, so a proxy set from a socks5:// URL can be read back.
+	if url := kreadKey(ctx, "socksProxy"); url != "" {
+		return normalizeKDESocksURL(url), nil
 	}
 	return "", ErrProxyNotSet
 }

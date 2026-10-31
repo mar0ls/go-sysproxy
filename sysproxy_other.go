@@ -11,10 +11,11 @@ import (
 // errUnsupported wraps ErrUnsupportedPlatform with the current GOOS so callers
 // can use errors.Is while still getting a specific message.
 
-func setUser(_ string) error           { return errUnsupported() }
-func unsetUser() error                 { return errUnsupported() }
-func setUserPAC(_ string) error        { return errUnsupported() }
-func setUserMulti(_ ProxyConfig) error { return errUnsupported() }
+func setUser(_ string) error              { return errUnsupported() }
+func unsetUser() error                    { return errUnsupported() }
+func setUserPAC(_ string) error           { return errUnsupported() }
+func setUserMulti(_ ProxyConfig) error    { return errUnsupported() }
+func snapshotUser() (func() error, error) { return nil, errUnsupported() }
 
 // otherBackend implements globalBackend for unsupported operating systems.
 type otherBackend struct{}
@@ -27,6 +28,10 @@ func (otherBackend) GetGlobalConfig(_ context.Context) (ProxyConfig, error) {
 }
 func (otherBackend) SetGlobalPAC(_ context.Context, _ string) error        { return errUnsupported() }
 func (otherBackend) SetGlobalMulti(_ context.Context, _ ProxyConfig) error { return errUnsupported() }
+
+func (otherBackend) SnapshotGlobal(_ context.Context) (restoreFunc, error) {
+	return nil, errUnsupported()
+}
 
 func init() { activeBackend = otherBackend{} }
 

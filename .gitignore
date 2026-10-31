@@ -1,5 +1,7 @@
 ROADMAP.md
 coverage.out
 dist/
-scripts/smoke/*
+scripts/smoke/linux_gnome_collect.sh
 VM_SMOKE*
+.cache/
+REVIEW_*

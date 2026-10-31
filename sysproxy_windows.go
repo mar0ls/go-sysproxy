@@ -4,48 +4,109 @@ package sysproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/url"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
 const regKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 
 func runReg(ctx context.Context, args ...string) error {
-	return exec.CommandContext(normalizeContext(ctx), "reg", args...).Run()
+	out, err := exec.CommandContext(normalizeContext(ctx), "reg", args...).CombinedOutput() //nolint:gosec
+	return execError("reg", regWhat(args), err, out)
 }
 
-func runCmdkey(ctx context.Context, args ...string) error {
-	return exec.CommandContext(normalizeContext(ctx), "cmdkey", args...).Run()
+// regWhat describes a reg call for an error message: the verb and the value
+// name, not the data.
+func regWhat(args []string) string {
+	what := ""
+	if len(args) > 0 {
+		what = args[0]
+	}
+	for i, a := range args {
+		if strings.EqualFold(a, "/v") && i+1 < len(args) {
+			what += " " + args[i+1]
+		}
+	}
+	return what
 }
 
-func runRundll32(ctx context.Context, args ...string) error {
-	return exec.CommandContext(normalizeContext(ctx), "rundll32.exe", args...).Run()
+// regBatch runs reg commands and collects failures: run records them, try only
+// logs (deleting a value that does not exist fails and is fine).
+type regBatch struct {
+	ctx  context.Context
+	errs []error
+}
+
+func (b *regBatch) run(args ...string) {
+	if err := runReg(b.ctx, args...); err != nil {
+		b.errs = append(b.errs, err)
+	}
+}
+
+func (b *regBatch) try(args ...string) {
+	if err := runReg(b.ctx, args...); err != nil {
+		logf("windows: ignored: %v", err)
+	}
+}
+
+// finish returns the registry failures as a hard error; otherwise warn (a
+// failure of an optional step such as storing credentials) as non-critical.
+func (b *regBatch) finish(warn error) error {
+	if len(b.errs) > 0 {
+		errs := b.errs
+		if warn != nil {
+			errs = append(errs, warn)
+		}
+		return errors.Join(errs...)
+	}
+	if warn != nil {
+		return &nonCriticalError{err: warn}
+	}
+	return nil
 }
 
 func setGlobal(ctx context.Context, p *proxy) error {
-	_ = runReg(ctx, "delete", regKey, "/v", "AutoConfigURL", "/f")
-	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
-	_ = runReg(ctx, "add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", p.host+":"+p.port, "/f")
-	_ = runReg(ctx, "add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", "localhost;127.0.0.1;::1", "/f")
+	b := &regBatch{ctx: ctx}
+	b.try("delete", regKey, "/v", "AutoConfigURL", "/f")
+	b.run("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
+	b.run("add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", proxyServerValue(p), "/f")
+	b.run("add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", "localhost;127.0.0.1;::1", "/f")
+	var warn error
 	if p.user != "" {
-		_ = runCmdkey(ctx, "/add:"+p.host, "/user:"+p.user, "/pass:"+p.pass)
+		if err := storeProxyCredential(p.host, p.user, p.pass); err != nil {
+			warn = fmt.Errorf("sysproxy: proxy credentials were not stored in Credential Manager: %w", err)
+		}
 	}
-	_ = runRundll32(ctx, "wininet.dll,InternetSetOptionEx")
-	return nil
+	refreshWinINET(ctx)
+	return b.finish(warn)
+}
+
+// refreshWinINET asks WinINET to re-read the settings. It is best effort: the
+// registry change is what matters.
+func refreshWinINET(context.Context) {
+	if err := notifyWinINET(); err != nil {
+		logf("windows: ignored: %v", err)
+	}
 }
 
 func unsetGlobal(ctx context.Context) error {
-	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f")
-	_ = runReg(ctx, "delete", regKey, "/v", "ProxyServer", "/f")
-	_ = runReg(ctx, "delete", regKey, "/v", "ProxyOverride", "/f")
-	_ = runReg(ctx, "delete", regKey, "/v", "AutoConfigURL", "/f")
-	if host, err := currentProxyHost(ctx); err == nil && host != "" {
-		_ = runCmdkey(ctx, "/delete:"+host)
+	b := &regBatch{ctx: ctx}
+	host, _ := currentProxyHost(ctx)
+	b.run("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f")
+	b.try("delete", regKey, "/v", "ProxyServer", "/f")
+	b.try("delete", regKey, "/v", "ProxyOverride", "/f")
+	b.try("delete", regKey, "/v", "AutoConfigURL", "/f")
+	if host != "" {
+		if err := removeProxyCredential(host); err != nil {
+			logf("windows: ignored: %v", err)
+		}
 	}
-	return nil
+	return b.finish(nil)
 }
 
 // currentProxyHost reads the proxy host from the registry so Unset can clean
@@ -55,17 +116,8 @@ func currentProxyHost(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "ProxyServer") {
-			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				hp := parts[len(parts)-1]
-				if idx := strings.LastIndex(hp, ":"); idx > 0 {
-					return hp[:idx], nil
-				}
-				return hp, nil
-			}
-		}
+	if _, data, ok := parseRegQuery(string(out), "ProxyServer"); ok && data != "" {
+		return proxyServerHost(data), nil
 	}
 	return "", fmt.Errorf("sysproxy: ProxyServer not found in registry")
 }
@@ -89,13 +141,14 @@ func getGlobal(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("sysproxy: cannot read ProxyServer: %w", err)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "ProxyServer") {
-			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				return "http://" + parts[len(parts)-1], nil
-			}
-		}
+	server := extractRegValue(string(out), "ProxyServer")
+	if server == "" {
+		return "", ErrProxyNotSet
+	}
+	// First kind wins: http, https, then socks (so a proxy set from a socks5://
+	// URL can be read back).
+	if u := firstProxyURL(parseWindowsProxyServer(server)); u != "" {
+		return u, nil
 	}
 	return "", ErrProxyNotSet
 }
@@ -111,14 +164,17 @@ func readAutoConfigURL(ctx context.Context) (string, error) {
 }
 
 func setGlobalPAC(ctx context.Context, pacURL string) error {
-	_ = runReg(ctx, "add", regKey, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", pacURL, "/f")
-	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f")
-	return nil
+	b := &regBatch{ctx: ctx}
+	b.run("add", regKey, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", pacURL, "/f")
+	b.run("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f")
+	refreshWinINET(ctx)
+	return b.finish(nil)
 }
 
 func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
-	_ = runReg(ctx, "delete", regKey, "/v", "AutoConfigURL", "/f")
-	_ = runReg(ctx, "add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
+	b := &regBatch{ctx: ctx}
+	b.try("delete", regKey, "/v", "AutoConfigURL", "/f")
+	b.run("add", regKey, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f")
 	var servers []string
 	if cfg.HTTP != "" {
 		servers = append(servers, "http="+hostPortFromURL(cfg.HTTP))
@@ -130,12 +186,13 @@ func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 		servers = append(servers, "socks="+hostPortFromURL(cfg.SOCKS))
 	}
 	if len(servers) > 0 {
-		_ = runReg(ctx, "add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", strings.Join(servers, ";"), "/f")
+		b.run("add", regKey, "/v", "ProxyServer", "/t", "REG_SZ", "/d", strings.Join(servers, ";"), "/f")
 	}
-	if cfg.NoProxy != "" {
-		_ = runReg(ctx, "add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", cfg.NoProxy, "/f")
+	if bypass := splitNoProxy(cfg.NoProxy); len(bypass) > 0 {
+		b.run("add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", proxyOverrideValue(bypass), "/f")
 	}
-	return nil
+	refreshWinINET(ctx)
+	return b.finish(nil)
 }
 
 func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
@@ -168,96 +225,180 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 	return cfg, nil
 }
 
-func setUser(proxyURL string) error {
-	psProfile, err := powershellProfile()
-	if err != nil {
-		return nil // best-effort
+func psLines(pairs []envPair) []string {
+	lines := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		lines = append(lines, "$env:"+p.name+" = "+psQuote(p.value))
 	}
-	f, err := os.OpenFile(psProfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	return lines
+}
+
+// applyProfileBlock writes body into every PowerShell profile, creating the
+// profile directory and file if needed. It fails only when no profile could be
+// written; partial failures are logged.
+func applyProfileBlock(body []string, merge bool, yield ...string) error {
+	profiles, err := powershellProfiles()
 	if err != nil {
-		return nil
+		return err
 	}
-	defer f.Close()
-	for _, l := range []string{
-		"$env:http_proxy = '" + proxyURL + "'",
-		"$env:HTTP_PROXY = '" + proxyURL + "'",
-		"$env:https_proxy = '" + proxyURL + "'",
-		"$env:HTTPS_PROXY = '" + proxyURL + "'",
-		"$env:all_proxy = '" + proxyURL + "'",
-		"$env:ALL_PROXY = '" + proxyURL + "'",
-		"$env:no_proxy = 'localhost,127.0.0.1,::1'",
-		"$env:NO_PROXY = 'localhost,127.0.0.1,::1'",
-	} {
-		_, _ = f.WriteString(l + "\n")
+	var errs []error
+	written := 0
+	for _, psProfile := range profiles {
+		err := os.MkdirAll(filepath.Dir(psProfile), 0o700)
+		if err == nil {
+			err = applyBlockFile(psProfile, body, merge, yield...)
+		}
+		if err != nil {
+			logf("windows: %s: %v", psProfile, err)
+			errs = append(errs, fmt.Errorf("sysproxy: %w", err))
+			continue
+		}
+		written++
+	}
+	if written == 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
 
+func setUser(proxyURL string) error {
+	return applyProfileBlock(psLines([]envPair{
+		{"http_proxy", proxyURL},
+		{"HTTP_PROXY", proxyURL},
+		{"https_proxy", proxyURL},
+		{"HTTPS_PROXY", proxyURL},
+		{"all_proxy", proxyURL},
+		{"ALL_PROXY", proxyURL},
+		{"no_proxy", defaultNoProxy},
+		{"NO_PROXY", defaultNoProxy},
+	}), false, noProxyNames...)
+}
+
+// unsetUser removes the go-sysproxy block (and unmarked lines written by
+// versions <= 0.5) from the PowerShell profile. Other lines are never touched.
 func unsetUser() error {
-	psProfile, err := powershellProfile()
+	profiles, err := powershellProfiles()
 	if err != nil {
-		return nil
+		return err
 	}
-	data, err := os.ReadFile(psProfile)
-	if err != nil {
-		return nil
-	}
-	var kept []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.Contains(line, "$env:http_proxy") || strings.Contains(line, "$env:HTTP_PROXY") ||
-			strings.Contains(line, "$env:https_proxy") || strings.Contains(line, "$env:HTTPS_PROXY") ||
-			strings.Contains(line, "$env:all_proxy") || strings.Contains(line, "$env:ALL_PROXY") ||
-			strings.Contains(line, "$env:no_proxy") || strings.Contains(line, "$env:NO_PROXY") ||
-			strings.Contains(line, "$env:AUTOPROXY") {
-			continue
+	var errs []error
+	for _, psProfile := range profiles {
+		if err := removeBlockFile(psProfile); err != nil {
+			errs = append(errs, fmt.Errorf("sysproxy: %w", err))
 		}
-		kept = append(kept, line)
 	}
-	_ = os.WriteFile(psProfile, []byte(strings.Join(kept, "\n")), 0600)
-	return nil
+	return errors.Join(errs...)
+}
+
+// snapshotUser records the managed block of the PowerShell profile for
+// WithProxy to restore.
+func snapshotUser() (func() error, error) {
+	profiles, err := powershellProfiles()
+	if err != nil {
+		return nil, err
+	}
+	snaps, err := snapshotBlockFiles(profiles)
+	if err != nil {
+		return nil, err
+	}
+	return func() error { return restoreBlockFiles(snaps) }, nil
 }
 
 func setUserPAC(pacURL string) error {
-	psProfile, err := powershellProfile()
-	if err != nil {
-		return nil
-	}
-	f, err := os.OpenFile(psProfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	_, _ = f.WriteString("$env:AUTOPROXY = '" + pacURL + "'\n")
-	return nil
+	return applyProfileBlock(psLines([]envPair{{"AUTOPROXY", pacURL}}), false)
 }
 
 func setUserMulti(cfg ProxyConfig) error {
-	psProfile, err := powershellProfile()
-	if err != nil {
-		return nil
-	}
-	f, err := os.OpenFile(psProfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
+	var pairs []envPair
 	if cfg.HTTP != "" {
-		_, _ = f.WriteString("$env:http_proxy = '" + cfg.HTTP + "'\n")
-		_, _ = f.WriteString("$env:HTTP_PROXY = '" + cfg.HTTP + "'\n")
+		pairs = append(pairs, envPair{"http_proxy", cfg.HTTP}, envPair{"HTTP_PROXY", cfg.HTTP})
 	}
 	if cfg.HTTPS != "" {
-		_, _ = f.WriteString("$env:https_proxy = '" + cfg.HTTPS + "'\n")
-		_, _ = f.WriteString("$env:HTTPS_PROXY = '" + cfg.HTTPS + "'\n")
+		pairs = append(pairs, envPair{"https_proxy", cfg.HTTPS}, envPair{"HTTPS_PROXY", cfg.HTTPS})
 	}
 	if cfg.SOCKS != "" {
-		_, _ = f.WriteString("$env:all_proxy = '" + cfg.SOCKS + "'\n")
-		_, _ = f.WriteString("$env:ALL_PROXY = '" + cfg.SOCKS + "'\n")
+		pairs = append(pairs, envPair{"all_proxy", cfg.SOCKS}, envPair{"ALL_PROXY", cfg.SOCKS})
 	}
 	if cfg.NoProxy != "" {
-		_, _ = f.WriteString("$env:no_proxy = '" + cfg.NoProxy + "'\n")
-		_, _ = f.WriteString("$env:NO_PROXY = '" + cfg.NoProxy + "'\n")
+		pairs = append(pairs, envPair{"no_proxy", cfg.NoProxy}, envPair{"NO_PROXY", cfg.NoProxy})
 	}
-	return nil
+	if len(pairs) == 0 {
+		return nil
+	}
+	return applyProfileBlock(psLines(pairs), true)
+}
+
+// regValue is one value of the Internet Settings key as WithProxy found it.
+type regValue struct {
+	name, typ, data string
+	present         bool
+}
+
+// regValueNames are the values the package writes.
+var regValueNames = []string{"ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL"}
+
+func readRegValue(ctx context.Context, name string) (regValue, error) {
+	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", name).Output() //nolint:gosec
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return regValue{name: name}, nil // value does not exist
+		}
+		return regValue{}, execError("reg", "query "+name, err, nil)
+	}
+	typ, data, ok := parseRegQuery(string(out), name)
+	if !ok {
+		return regValue{}, fmt.Errorf("sysproxy: cannot parse reg query output for %s", name)
+	}
+	return regValue{name: name, typ: typ, data: data, present: true}, nil
+}
+
+func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
+	vals := make([]regValue, 0, len(regValueNames))
+	for _, name := range regValueNames {
+		v, err := readRegValue(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		vals = append(vals, v)
+	}
+	var oldHost string
+	for _, v := range vals {
+		if v.name == "ProxyServer" && v.present {
+			oldHost = proxyServerHost(v.data)
+		}
+	}
+	return func(ctx context.Context) error {
+		// Credentials stored for a temporary proxy must not outlive it.
+		host, _ := currentProxyHost(ctx)
+		b := &regBatch{ctx: ctx}
+		enableAbsent := false
+		for _, v := range vals {
+			switch {
+			case v.present:
+				b.run("add", regKey, "/v", v.name, "/t", v.typ, "/d", v.data, "/f")
+			case v.name == "ProxyEnable":
+				// Deleting ProxyEnable before WinINET is notified makes it write
+				// its cached (temporary) settings back. Disable the proxy first,
+				// notify, and delete the value afterwards: absent and 0 both mean
+				// "no manual proxy".
+				enableAbsent = true
+				b.run("add", regKey, "/v", v.name, "/t", "REG_DWORD", "/d", "0", "/f")
+			default:
+				b.try("delete", regKey, "/v", v.name, "/f")
+			}
+		}
+		if host != "" && host != oldHost {
+			if err := removeProxyCredential(host); err != nil {
+				logf("windows: ignored: %v", err)
+			}
+		}
+		refreshWinINET(ctx)
+		if enableAbsent {
+			b.try("delete", regKey, "/v", "ProxyEnable", "/f")
+		}
+		return b.finish(nil)
+	}, nil
 }
 
 // windowsBackend implements globalBackend using the Windows registry and WinINET.
@@ -274,23 +415,47 @@ func (windowsBackend) SetGlobalMulti(ctx context.Context, c ProxyConfig) error {
 	return setGlobalMulti(ctx, c)
 }
 
+func (windowsBackend) SnapshotGlobal(ctx context.Context) (restoreFunc, error) {
+	return snapshotGlobal(ctx)
+}
+
 func init() { activeBackend = windowsBackend{} }
 
 func hostPortFromURL(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	if p := u.Port(); p != "" {
-		return u.Hostname() + ":" + p
-	}
-	return u.Hostname()
+	host, port := endpointFromURL(rawURL)
+	return net.JoinHostPort(host, port)
 }
 
-func powershellProfile() (string, error) {
+const psProfileName = "Microsoft.PowerShell_profile.ps1"
+
+// powershellProfiles returns the current-user profiles to edit: Windows
+// PowerShell 5's, and PowerShell 7's when its directory already exists (a
+// directory is not created for a shell that is not installed).
+func powershellProfiles() ([]string, error) {
+	docs, err := documentsDir()
+	if err != nil {
+		return nil, err
+	}
+	profiles := []string{filepath.Join(docs, "WindowsPowerShell", psProfileName)}
+	pwsh := filepath.Join(docs, "PowerShell")
+	if fi, err := os.Stat(pwsh); err == nil && fi.IsDir() {
+		profiles = append(profiles, filepath.Join(pwsh, psProfileName))
+	}
+	return profiles, nil
+}
+
+// documentsDir is the Documents folder profiles live in. It follows folder
+// redirection (OneDrive) when USERPROFILE is the real profile directory; when
+// USERPROFILE points elsewhere (a test, a service account) that wins.
+func documentsDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return home + `\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`, nil
+	if real, err := knownFolder(folderIDProfile); err == nil && strings.EqualFold(filepath.Clean(real), filepath.Clean(home)) {
+		if docs, err := knownFolder(folderIDDocuments); err == nil && docs != "" {
+			return docs, nil
+		}
+	}
+	return filepath.Join(home, "Documents"), nil
 }

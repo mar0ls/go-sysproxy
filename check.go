@@ -36,10 +36,10 @@ func Check(ctx context.Context, proxyURL string) error {
 }
 
 func defaultProxyPort(scheme string) string {
-	switch scheme {
-	case "https":
+	switch {
+	case scheme == "https":
 		return "443"
-	case "socks5", "socks4", "socks":
+	case isSOCKSScheme(scheme):
 		return "1080"
 	default:
 		return "80"
