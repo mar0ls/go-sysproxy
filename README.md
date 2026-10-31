@@ -305,7 +305,7 @@ _ = sysproxy.WriteAppConfig(sysproxy.AppGit,  "http://username:password@proxy.pr
 _ = sysproxy.WriteAppConfig(sysproxy.AppCurl, "http://username:password@proxy.provider.com:10000")
 ```
 
-> Credentials in proxy URLs are handled by the OS — on Windows they are stored in Credential Manager, not in plaintext.
+> Credentials in proxy URLs are handled by the OS — on Windows they are stored in Credential Manager (through its API, not `cmdkey`), not in plaintext. The entry is marked `go-sysproxy`: `Set` never overwrites a credential for the same host that something else stored (it returns a non-critical warning), and `Unset`/`WithProxy` delete only entries it wrote.
 
 ## Notes
 
@@ -341,7 +341,7 @@ The table below compares `go-sysproxy` with other Go proxy-management libraries 
 | macOS (`networksetup`) | ✓ | ✓ |
 | Linux GNOME (`gsettings`) | ✓ | ✓ |
 | Linux KDE (`kwriteconfig6` / `kwriteconfig5`) | ✓ | — |
-| Windows (registry + `cmdkey`) | ✓ | ✓ |
+| Windows (registry + Credential Manager API) | ✓ | ✓ |
 | `Get` / `GetConfig` per protocol | ✓ | partial |
 | `SetMulti` (HTTP/HTTPS/SOCKS + NoProxy) | ✓ | — |
 | `SetPAC` | ✓ | — |
@@ -357,7 +357,7 @@ The table below compares `go-sysproxy` with other Go proxy-management libraries 
 
 - **Command allowlist** — `exec.Command` is restricted to a fixed set of permitted binaries. No user-supplied input reaches the shell.
 - **Config files** — new files are created with mode `0600`; existing files keep their mode. Writes are atomic (temporary file + rename), and shell/PowerShell values are quoted, so URL, PAC and `NoProxy` input cannot inject commands.
-- **Secrets in logs and output** — the password in a proxy URL is masked (`user:***@host`) in `SetLogger` messages, error messages and CLI output. Note that the password is still passed to `networksetup`/`cmdkey`/`git`/`npm` on their command lines, where other local users can briefly see it, and is stored in plain text by `ScopeUser` (`0600`), `WriteAppConfig` and the tools those write for.
+- **Secrets in logs and output** — the password in a proxy URL is masked (`user:***@host`) in `SetLogger` messages, error messages and CLI output. Note that the password is still passed to `networksetup`/`git`/`npm` on their command lines, where other local users can briefly see it, and is stored in plain text by `ScopeUser` (`0600`), `WriteAppConfig` and the tools those write for.
 - **Static analysis** — code is checked with [golangci-lint](https://golangci-lint.run) (including `gosec`, `errcheck`, `staticcheck`) on every push.
 
 ## License

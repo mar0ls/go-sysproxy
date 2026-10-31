@@ -326,3 +326,73 @@ func withoutEnv(env []string, name string) []string {
 	}
 	return out
 }
+
+// F-17: proxy credentials go through the Credential Manager API. An entry that
+// belongs to someone else is never overwritten or deleted, ours is stored with
+// the right user and removed again, and the password stays out of every error.
+func TestIntegrationWindows_ProxyCredentials(t *testing.T) {
+	requireIntegration(t)
+	itRegRestoreOnCleanup(t)
+	const host = "sysproxy-test-cred.invalid"
+	const url = "http://alice:s3cr3tpw@" + host + ":8080"
+	remove := func() { _ = exec.Command("cmdkey", "/delete:"+host).Run() }
+	remove()
+	t.Cleanup(remove)
+
+	want := func(label, user, comment string, present bool) {
+		t.Helper()
+		c, err := readCredential(host)
+		if err != nil {
+			t.Fatalf("%s: readCredential: %v", label, err)
+		}
+		switch {
+		case !present && c != nil:
+			t.Fatalf("%s: entry exists (%+v), want none", label, c)
+		case present && c == nil:
+			t.Fatalf("%s: no entry, want user %q", label, user)
+		case present && (c.user != user || c.comment != comment):
+			t.Fatalf("%s: entry = %+v, want user %q comment %q", label, c, user, comment)
+		}
+	}
+
+	// Ours: stored, then removed by Unset.
+	if err := Set(url, ScopeGlobal); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	want("after Set", "alice", credComment, true)
+	if err := Unset(ScopeGlobal); err != nil {
+		t.Fatalf("Unset: %v", err)
+	}
+	want("after Unset", "", "", false)
+
+	// Someone else's: left alone by Set (a warning, not a failure) and by Unset.
+	if out, err := exec.Command("cmdkey", "/add:"+host, "/user:bob", "/pass:foreignpw").CombinedOutput(); err != nil {
+		t.Fatalf("cmdkey /add: %v\n%s", err, out)
+	}
+	want("foreign entry", "bob", "", true)
+	err := Set(url, ScopeGlobal)
+	if err == nil || !IsNonCritical(err) {
+		t.Fatalf("Set over a foreign entry: err = %v, want a non-critical warning", err)
+	}
+	if strings.Contains(err.Error(), "s3cr3tpw") || strings.Contains(err.Error(), "foreignpw") {
+		t.Errorf("warning leaks a password: %v", err)
+	}
+	want("after Set over foreign", "bob", "", true)
+	if got, gerr := Get(); gerr != nil || got != "http://"+host+":8080" {
+		t.Errorf("the proxy itself must still be set: %q, %v", got, gerr)
+	}
+	if err := Unset(ScopeGlobal); err != nil {
+		t.Fatalf("Unset: %v", err)
+	}
+	want("after Unset with foreign", "bob", "", true)
+
+	// WithProxy removes the entry it stored.
+	remove()
+	if err := WithProxy(context.Background(), url, ScopeGlobal, func(context.Context) error {
+		want("inside WithProxy", "alice", credComment, true)
+		return nil
+	}); err != nil {
+		t.Fatalf("WithProxy: %v", err)
+	}
+	want("after WithProxy", "", "", false)
+}

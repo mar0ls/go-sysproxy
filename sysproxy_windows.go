@@ -20,12 +20,6 @@ func runReg(ctx context.Context, args ...string) error {
 	return execError("reg", regWhat(args), err, out)
 }
 
-func runCmdkey(ctx context.Context, args ...string) error {
-	out, err := exec.CommandContext(normalizeContext(ctx), "cmdkey", args...).CombinedOutput() //nolint:gosec
-	// Never include the arguments: /pass: carries the password.
-	return execError("cmdkey", "", err, out)
-}
-
 // regWhat describes a reg call for an error message: the verb and the value
 // name, not the data.
 func regWhat(args []string) string {
@@ -84,7 +78,7 @@ func setGlobal(ctx context.Context, p *proxy) error {
 	b.run("add", regKey, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", "localhost;127.0.0.1;::1", "/f")
 	var warn error
 	if p.user != "" {
-		if err := runCmdkey(ctx, "/add:"+p.host, "/user:"+p.user, "/pass:"+p.pass); err != nil {
+		if err := storeProxyCredential(p.host, p.user, p.pass); err != nil {
 			warn = fmt.Errorf("sysproxy: proxy credentials were not stored in Credential Manager: %w", err)
 		}
 	}
@@ -108,7 +102,7 @@ func unsetGlobal(ctx context.Context) error {
 	b.try("delete", regKey, "/v", "ProxyOverride", "/f")
 	b.try("delete", regKey, "/v", "AutoConfigURL", "/f")
 	if host != "" {
-		if err := runCmdkey(ctx, "/delete:"+host); err != nil {
+		if err := removeProxyCredential(host); err != nil {
 			logf("windows: ignored: %v", err)
 		}
 	}
@@ -395,7 +389,7 @@ func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
 			}
 		}
 		if host != "" && host != oldHost {
-			if err := runCmdkey(ctx, "/delete:"+host); err != nil {
+			if err := removeProxyCredential(host); err != nil {
 				logf("windows: ignored: %v", err)
 			}
 		}
