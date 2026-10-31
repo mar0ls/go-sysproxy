@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -193,13 +194,18 @@ func SetMultiContext(ctx context.Context, cfg ProxyConfig, scope ProxyScope) err
 	switch scope {
 	case ScopeShell:
 		setEnvVarsMulti(cfg)
+		logf("set multi scope=shell %s", describeMulti(cfg))
 		return nil
 	case ScopeUser:
 		setEnvVarsMulti(cfg)
-		return setUserMulti(cfg)
+		err := setUserMulti(cfg)
+		logf("set multi scope=user %s err=%v", describeMulti(cfg), err)
+		return err
 	case ScopeGlobal:
 		setEnvVarsMulti(cfg)
-		return activeBackend.SetGlobalMulti(ctx, cfg)
+		err := activeBackend.SetGlobalMulti(ctx, cfg)
+		logf("set multi scope=global %s err=%v", describeMulti(cfg), err)
+		return err
 	default:
 		return fmt.Errorf("sysproxy: invalid scope %d", scope)
 	}
@@ -224,13 +230,18 @@ func SetPACContext(ctx context.Context, pacURL string, scope ProxyScope) error {
 	switch scope {
 	case ScopeShell:
 		setEnvVarsPAC(pacURL)
+		logf("set pac scope=shell url=%s", redactURL(pacURL))
 		return nil
 	case ScopeUser:
 		setEnvVarsPAC(pacURL)
-		return setUserPAC(pacURL)
+		err := setUserPAC(pacURL)
+		logf("set pac scope=user url=%s err=%v", redactURL(pacURL), err)
+		return err
 	case ScopeGlobal:
 		setEnvVarsPAC(pacURL)
-		return activeBackend.SetGlobalPAC(ctx, pacURL)
+		err := activeBackend.SetGlobalPAC(ctx, pacURL)
+		logf("set pac scope=global url=%s err=%v", redactURL(pacURL), err)
+		return err
 	default:
 		return fmt.Errorf("sysproxy: invalid scope %d", scope)
 	}
@@ -333,4 +344,18 @@ func snapshotState(ctx context.Context, scope ProxyScope) (func(context.Context)
 		}
 		return errors.Join(errs...)
 	}, nil
+}
+
+// describeMulti renders a ProxyConfig for the log without credentials.
+func describeMulti(cfg ProxyConfig) string {
+	var parts []string
+	for _, f := range []struct{ name, url string }{{"http", cfg.HTTP}, {"https", cfg.HTTPS}, {"socks", cfg.SOCKS}} {
+		if f.url != "" {
+			parts = append(parts, f.name+"="+redactURL(f.url))
+		}
+	}
+	if cfg.NoProxy != "" {
+		parts = append(parts, "no_proxy="+cfg.NoProxy)
+	}
+	return strings.Join(parts, " ")
 }

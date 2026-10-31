@@ -85,6 +85,7 @@ export http_proxy='http://proxy.example.com:8080'
 - Files are replaced atomically; mode, owner and symlinks (dotfile managers) are preserved.
 - `Unset` removes the block, plus the unmarked `export …_proxy=` / `$env:…_proxy =` lines that versions ≤ 0.5 wrote. Other lines — including your own `NO_PROXY` — are kept.
 - The default `no_proxy` (`localhost,127.0.0.1,::1`) is not written if the file already defines `no_proxy` / `NO_PROXY`.
+- On Windows the block goes into Windows PowerShell's profile (`Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`, following a OneDrive-redirected Documents folder) and, when `Documents\PowerShell` already exists, into PowerShell 7's profile too.
 - Values are shell-quoted (PowerShell-quoted on Windows). A proxy URL, PAC URL or `NoProxy` entry cannot inject commands. `NoProxy` may only contain host-name characters, `*`, `/`, `:`, `,`, `;`, `[]`, `<>`, `%` and spaces; proxy and PAC URLs may not contain whitespace or control characters.
 
 ## API
@@ -126,6 +127,8 @@ cfg, err := sysproxy.GetConfig()
 ```
 
 `GetConfigContext` is also available.
+
+On macOS `Set` writes to every network service, while `Get`/`GetConfig` read the one that carries the default route (found with `route -n get default`), because the first service in the list is often an idle adapter. If the route cannot be mapped to a service (no network, VPN-only), the first service is read.
 
 ### Per-protocol proxy
 

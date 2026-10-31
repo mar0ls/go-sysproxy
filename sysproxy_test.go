@@ -722,3 +722,30 @@ func TestLogger_DoesNotLeakPassword(t *testing.T) {
 		}
 	}
 }
+
+// F-18: SetMulti and SetPAC left no trace, unlike Set.
+func TestLogger_CoversSetMultiAndSetPACWithoutPasswords(t *testing.T) {
+	l := &testLogger{}
+	SetLogger(l)
+	t.Cleanup(func() { SetLogger(nil) })
+	setTestHome(t)
+	t.Cleanup(unsetEnvVars)
+
+	if err := SetMulti(ProxyConfig{HTTP: "http://alice:s3cr3t@proxy.example.com:8080", SOCKS: "socks5://proxy.example.com:1080", NoProxy: "localhost"}, ScopeShell); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetPAC("https://bob:hunter2@pac.example.com/p.pac", ScopeShell); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(l.msgs, "\n")
+	for _, want := range []string{"set multi scope=shell", "http=http://alice:***@proxy.example.com:8080", "socks=socks5://proxy.example.com:1080", "set pac scope=shell"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("log lacks %q:\n%s", want, joined)
+		}
+	}
+	for _, secret := range []string{"s3cr3t", "hunter2"} {
+		if strings.Contains(joined, secret) {
+			t.Errorf("log leaks %q:\n%s", secret, joined)
+		}
+	}
+}

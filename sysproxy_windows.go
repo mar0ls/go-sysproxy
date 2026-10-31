@@ -26,11 +26,6 @@ func runCmdkey(ctx context.Context, args ...string) error {
 	return execError("cmdkey", "", err, out)
 }
 
-func runRundll32(ctx context.Context, args ...string) error {
-	out, err := exec.CommandContext(normalizeContext(ctx), "rundll32.exe", args...).CombinedOutput() //nolint:gosec
-	return execError("rundll32.exe", "", err, out)
-}
-
 // regWhat describes a reg call for an error message: the verb and the value
 // name, not the data.
 func regWhat(args []string) string {
@@ -99,8 +94,8 @@ func setGlobal(ctx context.Context, p *proxy) error {
 
 // refreshWinINET asks WinINET to re-read the settings. It is best effort: the
 // registry change is what matters.
-func refreshWinINET(ctx context.Context) {
-	if err := runRundll32(ctx, "wininet.dll,InternetSetOptionEx"); err != nil {
+func refreshWinINET(context.Context) {
+	if err := notifyWinINET(); err != nil {
 		logf("windows: ignored: %v", err)
 	}
 }
@@ -244,17 +239,32 @@ func psLines(pairs []envPair) []string {
 	return lines
 }
 
-// applyProfileBlock writes body into the PowerShell profile, creating the
-// profile directory and file if needed.
+// applyProfileBlock writes body into every PowerShell profile, creating the
+// profile directory and file if needed. It fails only when no profile could be
+// written; partial failures are logged.
 func applyProfileBlock(body []string, merge bool, yield ...string) error {
-	psProfile, err := powershellProfile()
+	profiles, err := powershellProfiles()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(psProfile), 0o700); err != nil {
-		return err
+	var errs []error
+	written := 0
+	for _, psProfile := range profiles {
+		err := os.MkdirAll(filepath.Dir(psProfile), 0o700)
+		if err == nil {
+			err = applyBlockFile(psProfile, body, merge, yield...)
+		}
+		if err != nil {
+			logf("windows: %s: %v", psProfile, err)
+			errs = append(errs, fmt.Errorf("sysproxy: %w", err))
+			continue
+		}
+		written++
 	}
-	return applyBlockFile(psProfile, body, merge, yield...)
+	if written == 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 func setUser(proxyURL string) error {
@@ -273,21 +283,27 @@ func setUser(proxyURL string) error {
 // unsetUser removes the go-sysproxy block (and unmarked lines written by
 // versions <= 0.5) from the PowerShell profile. Other lines are never touched.
 func unsetUser() error {
-	psProfile, err := powershellProfile()
+	profiles, err := powershellProfiles()
 	if err != nil {
 		return err
 	}
-	return removeBlockFile(psProfile)
+	var errs []error
+	for _, psProfile := range profiles {
+		if err := removeBlockFile(psProfile); err != nil {
+			errs = append(errs, fmt.Errorf("sysproxy: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // snapshotUser records the managed block of the PowerShell profile for
 // WithProxy to restore.
 func snapshotUser() (func() error, error) {
-	psProfile, err := powershellProfile()
+	profiles, err := powershellProfiles()
 	if err != nil {
 		return nil, err
 	}
-	snaps, err := snapshotBlockFiles([]string{psProfile})
+	snaps, err := snapshotBlockFiles(profiles)
 	if err != nil {
 		return nil, err
 	}
@@ -404,10 +420,36 @@ func hostPortFromURL(rawURL string) string {
 	return net.JoinHostPort(host, port)
 }
 
-func powershellProfile() (string, error) {
+const psProfileName = "Microsoft.PowerShell_profile.ps1"
+
+// powershellProfiles returns the current-user profiles to edit: Windows
+// PowerShell 5's, and PowerShell 7's when its directory already exists (a
+// directory is not created for a shell that is not installed).
+func powershellProfiles() ([]string, error) {
+	docs, err := documentsDir()
+	if err != nil {
+		return nil, err
+	}
+	profiles := []string{filepath.Join(docs, "WindowsPowerShell", psProfileName)}
+	pwsh := filepath.Join(docs, "PowerShell")
+	if fi, err := os.Stat(pwsh); err == nil && fi.IsDir() {
+		profiles = append(profiles, filepath.Join(pwsh, psProfileName))
+	}
+	return profiles, nil
+}
+
+// documentsDir is the Documents folder profiles live in. It follows folder
+// redirection (OneDrive) when USERPROFILE is the real profile directory; when
+// USERPROFILE points elsewhere (a test, a service account) that wins.
+func documentsDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return home + `\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`, nil
+	if real, err := knownFolder(folderIDProfile); err == nil && strings.EqualFold(filepath.Clean(real), filepath.Clean(home)) {
+		if docs, err := knownFolder(folderIDDocuments); err == nil && docs != "" {
+			return docs, nil
+		}
+	}
+	return filepath.Join(home, "Documents"), nil
 }

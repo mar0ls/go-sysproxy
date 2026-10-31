@@ -23,6 +23,10 @@ var (
 		out, err := exec.CommandContext(normalizeContext(ctx), "networksetup", args...).Output() //nolint:gosec
 		return out, execError("networksetup", nsWhat(args), err, out)
 	}
+	// routeDefault prints the default route; tests replace it.
+	routeDefault = func(ctx context.Context) ([]byte, error) {
+		return exec.CommandContext(normalizeContext(ctx), "route", "-n", "get", "default").Output()
+	}
 )
 
 // nsWhat describes a networksetup call for an error message: the flag and the
@@ -142,7 +146,7 @@ func getGlobal(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	svc := services[0]
+	svc := primaryNetworkService(ctx, services)
 	// First enabled kind wins: web, secure web, then SOCKS (so a proxy set from
 	// a socks5:// URL can be read back).
 	for i, k := range nsProxyKinds {
@@ -223,7 +227,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 	if err != nil {
 		return ProxyConfig{}, err
 	}
-	svc := services[0]
+	svc := primaryNetworkService(ctx, services)
 	ctx = normalizeContext(ctx)
 
 	var cfg ProxyConfig
@@ -464,4 +468,63 @@ func macOSNetworkServices(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("sysproxy: networksetup: no enabled network services found")
 	}
 	return svcs, nil
+}
+
+// primaryNetworkService picks the service Get reports on: the one that carries
+// the default route, because Set writes to every service and the first one in
+// the list is often an idle adapter. When the route or its service cannot be
+// determined (no network, a VPN interface) it falls back to the first service.
+func primaryNetworkService(ctx context.Context, services []string) string {
+	out, err := routeDefault(ctx)
+	if err != nil {
+		logf("darwin: default route unavailable, using %q: %v", services[0], err)
+		return services[0]
+	}
+	iface := parseDefaultInterface(string(out))
+	if iface == "" {
+		return services[0]
+	}
+	order, err := networksetupOutput(ctx, "-listnetworkserviceorder")
+	if err != nil {
+		logf("darwin: service order unavailable, using %q: %v", services[0], err)
+		return services[0]
+	}
+	svc := serviceForDevice(string(order), iface)
+	for _, s := range services {
+		if s == svc {
+			return svc
+		}
+	}
+	return services[0]
+}
+
+// parseDefaultInterface extracts the interface of `route -n get default`.
+func parseDefaultInterface(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), ":"); ok && k == "interface" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// serviceForDevice maps a device (en0) to its service name using the output of
+// `networksetup -listnetworkserviceorder`: a "(N) Service" line followed by a
+// "(Hardware Port: X, Device: en0)" line.
+func serviceForDevice(out, device string) string {
+	var name string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "(Hardware Port:"):
+			if strings.HasSuffix(line, "Device: "+device+")") {
+				return name
+			}
+		case strings.HasPrefix(line, "("):
+			if _, rest, ok := strings.Cut(line, ") "); ok {
+				name = strings.TrimSpace(rest)
+			}
+		}
+	}
+	return ""
 }

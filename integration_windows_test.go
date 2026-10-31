@@ -246,10 +246,11 @@ func TestIntegrationWindows_UserScopeProfile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("HOME", home)
-	profile, err := powershellProfile()
+	profiles, err := powershellProfiles()
 	if err != nil {
 		t.Fatal(err)
 	}
+	profile := profiles[0]
 	sentinel := filepath.Join(home, "pwned.txt")
 
 	evalProfile := func(vars ...string) []string {

@@ -113,8 +113,12 @@ type nsFakeService struct {
 // sentence rather than nothing.
 type fakeNetworksetup struct {
 	order []string
-	svc   map[string]*nsFakeService
-	calls []string
+	// devices maps a service to its device; route is the default-route
+	// interface ("" = route fails).
+	devices map[string]string
+	route   string
+	svc     map[string]*nsFakeService
+	calls   []string
 	// fail, when set, is consulted for every set command.
 	fail func(args []string) error
 }
@@ -128,6 +132,14 @@ func installFakeNetworksetup(t *testing.T, services ...string) *fakeNetworksetup
 	}
 	origRun, origOut := networksetupRun, networksetupOutput
 	t.Cleanup(func() { networksetupRun, networksetupOutput = origRun, origOut })
+	origRoute := routeDefault
+	t.Cleanup(func() { routeDefault = origRoute })
+	routeDefault = func(context.Context) ([]byte, error) {
+		if f.route == "" {
+			return nil, errors.New("route: not in table")
+		}
+		return []byte("   route to: default\n    gateway: 192.168.50.1\n  interface: " + f.route + "\n"), nil
+	}
 	networksetupOutput = f.output
 	networksetupRun = f.run
 	return f
@@ -164,6 +176,13 @@ func yesNo(b bool) string {
 }
 
 func (f *fakeNetworksetup) output(_ context.Context, args ...string) ([]byte, error) {
+	if len(args) == 1 && args[0] == "-listnetworkserviceorder" {
+		out := "An asterisk (*) denotes that a network service is disabled.\n"
+		for i, s := range f.order {
+			out += fmt.Sprintf("(%d) %s\n(Hardware Port: %s, Device: %s)\n\n", i+1, s, s, f.devices[s])
+		}
+		return []byte(out), nil
+	}
 	if len(args) == 1 && args[0] == "-listallnetworkservices" {
 		out := "An asterisk (*) denotes that a network service is disabled.\n"
 		return []byte(out + strings.Join(f.order, "\n") + "\n"), nil
@@ -663,5 +682,64 @@ func TestWithProxy_Darwin_RestoresExactly(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s after WithProxy = %+v, want %+v", name, got, want)
 		}
+	}
+}
+
+func TestParseDefaultInterface(t *testing.T) {
+	out := "   route to: default\ndestination: default\n    gateway: 192.168.50.1\n  interface: en0\n      flags: <UP>\n"
+	if got := parseDefaultInterface(out); got != "en0" {
+		t.Fatalf("got %q", got)
+	}
+	if got := parseDefaultInterface("route: writing to routing socket: not in table\n"); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestServiceForDevice(t *testing.T) {
+	out := "An asterisk (*) denotes that a network service is disabled.\n" +
+		"(1) USB 10/100 LAN\n(Hardware Port: USB 10/100 LAN, Device: en5)\n\n" +
+		"(2) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n\n" +
+		"(3) mikrus-wg\n(Hardware Port: com.wireguard.macos, Device: )\n"
+	if got := serviceForDevice(out, "en0"); got != "Wi-Fi" {
+		t.Fatalf("en0: got %q", got)
+	}
+	if got := serviceForDevice(out, "en5"); got != "USB 10/100 LAN" {
+		t.Fatalf("en5: got %q", got)
+	}
+	if got := serviceForDevice(out, "en9"); got != "" {
+		t.Fatalf("en9: got %q", got)
+	}
+}
+
+// F-19: Get reported the first service (an idle adapter) while Set wrote to all.
+func TestGet_ReadsTheServiceWithTheDefaultRoute(t *testing.T) {
+	f := installFakeNetworksetup(t, "USB LAN", "Wi-Fi")
+	f.devices = map[string]string{"USB LAN": "en5", "Wi-Fi": "en0"}
+	f.route = "en0"
+	f.svc["USB LAN"].pacEnabled, f.svc["USB LAN"].pacURL = true, "https://stale.example/proxy.pac"
+	f.svc["Wi-Fi"].web = nsFakeProxy{enabled: true, host: "10.0.0.1", port: "3128"}
+
+	got, err := getGlobal(context.Background())
+	if err != nil || got != "http://10.0.0.1:3128" {
+		t.Fatalf("Get = %q, %v; want the Wi-Fi proxy", got, err)
+	}
+	cfg, err := getGlobalConfig(context.Background())
+	if err != nil || cfg.HTTP != "http://10.0.0.1:3128" || cfg.PAC != "" {
+		t.Fatalf("GetConfig = %+v, %v", cfg, err)
+	}
+}
+
+func TestGet_FallsBackToFirstServiceWithoutRoute(t *testing.T) {
+	f := installFakeNetworksetup(t, "USB LAN", "Wi-Fi")
+	f.devices = map[string]string{"USB LAN": "en5", "Wi-Fi": "en0"}
+	f.svc["USB LAN"].web = nsFakeProxy{enabled: true, host: "10.0.0.2", port: "8080"}
+
+	f.route = "" // route fails
+	if got, err := getGlobal(context.Background()); err != nil || got != "http://10.0.0.2:8080" {
+		t.Fatalf("no route: %q, %v", got, err)
+	}
+	f.route = "utun3" // VPN interface that is not a network service
+	if got, err := getGlobal(context.Background()); err != nil || got != "http://10.0.0.2:8080" {
+		t.Fatalf("vpn route: %q, %v", got, err)
 	}
 }
