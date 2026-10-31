@@ -197,7 +197,6 @@ func TestIntegrationWindows_RegistryWriteDeniedIsReported(t *testing.T) {
 	requireIntegration(t)
 	itRegRestoreOnCleanup(t)
 
-	const key = `HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 	ps := func(script string) string {
 		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script) //nolint:gosec
 		// A PSModulePath inherited from PowerShell 7 keeps Windows PowerShell from
@@ -209,9 +208,15 @@ func TestIntegrationWindows_RegistryWriteDeniedIsReported(t *testing.T) {
 		}
 		return string(out)
 	}
-	ps(`$k='` + key + `'; $acl=Get-Acl $k; $r=New-Object System.Security.AccessControl.RegistryAccessRule([Security.Principal.WindowsIdentity]::GetCurrent().Name,'SetValue','Deny'); $acl.AddAccessRule($r); Set-Acl $k $acl`)
+	// Edit the key's ACL through the .NET registry API: Set-Acl rewrites the whole
+	// security descriptor and is refused once a Deny entry exists.
+	const open = `$rk=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Internet Settings',` +
+		`[Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,` +
+		`[System.Security.AccessControl.RegistryRights]::ChangePermissions -bor [System.Security.AccessControl.RegistryRights]::ReadKey);` +
+		`$me=[Security.Principal.WindowsIdentity]::GetCurrent().Name;$acl=$rk.GetAccessControl();`
+	ps(open + `$r=New-Object System.Security.AccessControl.RegistryAccessRule($me,'SetValue','Deny');$acl.AddAccessRule($r);$rk.SetAccessControl($acl)`)
 	t.Cleanup(func() {
-		ps(`$k='` + key + `'; $acl=Get-Acl $k; $acl.Access | Where-Object { $_.AccessControlType -eq 'Deny' -and $_.IdentityReference -eq [Security.Principal.WindowsIdentity]::GetCurrent().Name } | ForEach-Object { [void]$acl.RemoveAccessRule($_) }; Set-Acl $k $acl`)
+		ps(open + `$acl.Access | Where-Object { $_.AccessControlType -eq 'Deny' -and $_.IdentityReference -eq $me } | ForEach-Object { [void]$acl.RemoveAccessRule($_) };$rk.SetAccessControl($acl)`)
 	})
 
 	err := SetContext(context.Background(), "http://proxy.example.com:8080", ScopeGlobal)
@@ -270,8 +275,12 @@ func TestIntegrationWindows_UserScopeProfile(t *testing.T) {
 		if err := SetPAC(pac, ScopeUser); err != nil {
 			t.Fatalf("SetPAC(%q): %v", pac, err)
 		}
-		if got := evalProfile("AUTOPROXY")[0]; got != pac {
-			t.Errorf("AUTOPROXY = %q, want %q", got, pac)
+		// PowerShell folds the typographic quotes U+2018..U+201B to an ASCII quote
+		// inside a quoted string; the value must arrive otherwise unchanged and,
+		// above all, unexecuted (checked below).
+		want := strings.NewReplacer("\u2018", "'", "\u2019", "'", "\u201a", "'", "\u201b", "'").Replace(pac)
+		if got := evalProfile("AUTOPROXY")[0]; got != want {
+			t.Errorf("AUTOPROXY = %q, want %q", got, want)
 		}
 		if _, err := os.Stat(sentinel); err == nil {
 			t.Fatalf("injection succeeded for %q", pac)
