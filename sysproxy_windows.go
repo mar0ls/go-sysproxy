@@ -378,10 +378,19 @@ func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
 		// Credentials stored for a temporary proxy must not outlive it.
 		host, _ := currentProxyHost(ctx)
 		b := &regBatch{ctx: ctx}
+		enableAbsent := false
 		for _, v := range vals {
-			if v.present {
+			switch {
+			case v.present:
 				b.run("add", regKey, "/v", v.name, "/t", v.typ, "/d", v.data, "/f")
-			} else {
+			case v.name == "ProxyEnable":
+				// Deleting ProxyEnable before WinINET is notified makes it write
+				// its cached (temporary) settings back. Disable the proxy first,
+				// notify, and delete the value afterwards: absent and 0 both mean
+				// "no manual proxy".
+				enableAbsent = true
+				b.run("add", regKey, "/v", v.name, "/t", "REG_DWORD", "/d", "0", "/f")
+			default:
 				b.try("delete", regKey, "/v", v.name, "/f")
 			}
 		}
@@ -391,6 +400,9 @@ func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
 			}
 		}
 		refreshWinINET(ctx)
+		if enableAbsent {
+			b.try("delete", regKey, "/v", "ProxyEnable", "/f")
+		}
 		return b.finish(nil)
 	}, nil
 }
