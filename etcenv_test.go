@@ -189,3 +189,25 @@ func TestClearEtcEnvironment_UntouchedFileWithoutTrailingNewline(t *testing.T) {
 		t.Errorf("file changed to %q", got)
 	}
 }
+
+func TestClearEtcEnvironment_UntouchedFileWithTrailingBlankLines(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a read-only directory that is enforced")
+	}
+	const content = "PATH=/usr/bin\n\n\n"
+	path := etcPath(t, content)
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o555); err != nil { //nolint:gosec // test: make a rewrite impossible
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) }) //nolint:gosec
+	if err := os.Chmod(path, 0o444); err != nil {  //nolint:gosec // test: read-only on purpose
+		t.Fatal(err)
+	}
+	if err := clearEtcEnvironment(path); err != nil {
+		t.Fatalf("clearEtcEnvironment: %v", err)
+	}
+	if got := readEtc(t, path); got != content {
+		t.Errorf("file changed to %q", got)
+	}
+}

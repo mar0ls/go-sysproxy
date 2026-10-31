@@ -301,16 +301,12 @@ func withState(ctx context.Context, scope ProxyScope, fn func(context.Context) e
 	defer func() {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
 		defer cancel()
-		rerr := restore(rctx)
-		switch {
-		case rerr == nil:
-		case IsNonCritical(rerr):
-			// The state is back; only an optional step warned. Joined with fn's
-			// error it would also make a hard failure look like a warning.
-			logf("WithProxy: restore warning: %v", rerr)
-		default:
+		if rerr := restore(rctx); rerr != nil {
 			logf("WithProxy: restore failed: %v", rerr)
-			err = combine(err, fmt.Errorf("sysproxy: restoring the previous proxy state failed: %w", rerr))
+			// A restore step that did not happen is a failure whatever its
+			// classification; unclassified keeps a non-critical one from making
+			// fn's error (or this one) look like a warning to IsNonCritical.
+			err = combine(err, fmt.Errorf("sysproxy: restoring the previous proxy state failed: %w", unclassified(rerr)))
 		}
 	}()
 

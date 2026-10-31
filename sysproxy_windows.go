@@ -332,12 +332,25 @@ type regValue struct {
 // regValueNames are the values the package writes.
 var regValueNames = []string{"ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL"}
 
+// regQuery runs `reg query` on the Internet Settings key (with extra
+// arguments); tests replace it.
+var regQuery = func(ctx context.Context, args ...string) ([]byte, error) {
+	return systemCommand(ctx, "reg", append([]string{"query", regKey}, args...)...).Output()
+}
+
 func readRegValue(ctx context.Context, name string) (regValue, error) {
-	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", name).Output()
+	out, err := regQuery(ctx, "/v", name)
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return regValue{name: name}, nil // value does not exist
+			// reg exits 1 both for a missing value and for a key it cannot read.
+			// Only when the key itself reads fine is the value really absent;
+			// treating "access denied" as "absent" would let a snapshot or a
+			// merge silently discard the existing settings.
+			if _, kerr := regQuery(ctx); kerr != nil {
+				return regValue{}, execError("reg", "query "+name, kerr, nil)
+			}
+			return regValue{name: name}, nil
 		}
 		return regValue{}, execError("reg", "query "+name, err, nil)
 	}

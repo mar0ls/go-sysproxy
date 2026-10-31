@@ -315,21 +315,22 @@ func TestFlattenDropsClassification(t *testing.T) {
 	}
 }
 
-// A non-critical restore warning (for example "running through sudo") is not a
-// restore failure, and joined with fn's error it must not make that error look
-// like a warning to IsNonCritical.
-func TestWithProxy_NonCriticalRestoreWarningDoesNotTaintTheResult(t *testing.T) {
+// A restore step that did not happen is a failure, whatever its classification
+// (a failed /etc/environment write is reported as non-critical by the Linux
+// backend); and it must never make fn's error look like a warning.
+func TestWithProxy_NonCriticalRestoreErrorIsStillAFailureAndNeverTaints(t *testing.T) {
 	tb := newTrackingBackend(t)
-	tb.restoreErr = &nonCriticalError{err: errors.New("running as root through sudo")}
+	tb.restoreErr = &nonCriticalError{err: errors.New("write /etc/environment: input/output error")}
 
-	if err := WithProxy(context.Background(), "http://tmp:9999", ScopeGlobal, func(context.Context) error { return nil }); err != nil {
-		t.Errorf("a restore warning must not fail WithProxy, got %v", err)
+	err := WithProxy(context.Background(), "http://tmp:9999", ScopeGlobal, func(context.Context) error { return nil })
+	if err == nil || IsNonCritical(err) {
+		t.Errorf("err = %v (non-critical=%v); want a hard restore failure", err, IsNonCritical(err))
 	}
 
 	boom := errors.New("boom")
-	err := WithProxy(context.Background(), "http://tmp:9999", ScopeGlobal, func(context.Context) error { return boom })
+	err = WithProxy(context.Background(), "http://tmp:9999", ScopeGlobal, func(context.Context) error { return boom })
 	if !errors.Is(err, boom) || IsNonCritical(err) {
-		t.Errorf("err = %v (non-critical=%v); want fn's hard error", err, IsNonCritical(err))
+		t.Errorf("err = %v (non-critical=%v); want fn's error and no warning classification", err, IsNonCritical(err))
 	}
 }
 

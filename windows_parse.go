@@ -1,9 +1,6 @@
 package sysproxy
 
-import (
-	"net"
-	"strings"
-)
+import "strings"
 
 // parseWindowsProxyServer converts a ProxyServer registry value to ProxyConfig.
 // The value is either "host:port" (one HTTP proxy for the HTTP and HTTPS
@@ -59,8 +56,9 @@ func mergeProxyServer(current string, cfg ProxyConfig) string {
 	}
 	for kind, u := range map[string]string{"http": cfg.HTTP, "https": cfg.HTTPS, "socks": cfg.SOCKS} {
 		if u != "" {
-			host, port := endpointFromURL(u)
-			kinds[kind] = net.JoinHostPort(host, port)
+			if host, port := endpointFromURL(u); host != "" {
+				kinds[kind] = joinHostPort(host, port)
+			}
 		}
 	}
 	var parts []string

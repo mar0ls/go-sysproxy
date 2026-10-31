@@ -159,3 +159,11 @@ func TestMergeProxyServer(t *testing.T) {
 		}
 	}
 }
+
+// A URL that does not parse gives no host and must not become "http=:".
+func TestMergeProxyServer_SkipsUnparsableURLs(t *testing.T) {
+	got := mergeProxyServer("https=b.example.com:2", ProxyConfig{HTTP: "://"})
+	if got != "https=b.example.com:2" {
+		t.Errorf("got %q, want the current value unchanged", got)
+	}
+}

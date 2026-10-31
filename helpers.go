@@ -3,7 +3,14 @@ package sysproxy
 import (
 	"net"
 	"os/exec"
+	"strings"
 )
+
+// joinHostPort is net.JoinHostPort for a host that may already carry the
+// brackets of an IPv6 literal, as some tools store it.
+func joinHostPort(host, port string) string {
+	return net.JoinHostPort(strings.Trim(host, "[]"), port)
+}
 
 func isAvailable(name string) bool {
 	_, err := exec.LookPath(name)

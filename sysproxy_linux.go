@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"strings"
 )
@@ -67,7 +66,10 @@ func gnomeUsable(ctx context.Context) bool {
 	return hasSystemTool("gsettings") && runGsettings(ctx, "list-keys", gnomeProxySchema) == nil
 }
 
-func kdeWritable() bool { return kwriteconfigBinary() != "" }
+// kdeWritable reports whether KDE settings can be both written and read back.
+// Set changes the KDE keys only when WithProxy can also save and restore them,
+// so a kwriteconfig without its kreadconfig counts as no KDE at all.
+func kdeWritable() bool { return kwriteconfigBinary() != "" && kreadconfigBinary() != "" }
 
 // kdeSet writes one key of the "Proxy Settings" group of kioslaverc.
 func kdeSet(ctx context.Context, key, value string) error {
@@ -78,6 +80,9 @@ func kdeSet(ctx context.Context, key, value string) error {
 type steps struct {
 	ctx  context.Context
 	errs []error
+	// restoring marks steps that put a saved state back: they never add the
+	// "written for root" sudo warning, which is about what a Set changed.
+	restoring bool
 }
 
 func (s *steps) gs(args ...string) {
@@ -134,7 +139,7 @@ func (s *steps) finish(desktop bool, etcErr error, what string) error {
 		}
 		return nil
 	}
-	if etcErr != nil && !IsNonCritical(etcErr) {
+	if s.restoring || (etcErr != nil && !IsNonCritical(etcErr)) {
 		return etcErr
 	}
 	return combine(etcErr, sudoDesktopWarning())
@@ -238,7 +243,7 @@ func getGlobalGnome(ctx context.Context) (string, error) {
 		h := strings.Trim(strings.TrimSpace(string(host)), "'")
 		p := strings.TrimSpace(string(port))
 		if h != "" && p != "0" {
-			return q.scheme + "://" + net.JoinHostPort(h, p), nil
+			return q.scheme + "://" + joinHostPort(h, p), nil
 		}
 	}
 	return "", ErrProxyNotSet
@@ -315,7 +320,7 @@ func getGlobalConfigGnome(ctx context.Context) (ProxyConfig, error) {
 		h := gsettingsField(ctx, q.schema, "host")
 		p := gsettingsField(ctx, q.schema, "port")
 		if h != "" && p != "0" {
-			*q.dest = q.scheme + "://" + net.JoinHostPort(h, p)
+			*q.dest = q.scheme + "://" + joinHostPort(h, p)
 		}
 	}
 
@@ -490,10 +495,6 @@ func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
 	}
 	var kde []keyValue
 	if kdeWritable() {
-		// Set writes the KDE keys, so the restore has to be able to read them.
-		if kreadconfigBinary() == "" {
-			return nil, fmt.Errorf("%w: kreadconfig6/kreadconfig5, needed to save the KDE proxy state", ErrToolMissing)
-		}
 		for _, key := range kdeKeys {
 			v, err := kdeRead(ctx, key)
 			if err != nil {
@@ -508,7 +509,7 @@ func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
 	}
 
 	return func(ctx context.Context) error {
-		st := &steps{ctx: ctx}
+		st := &steps{ctx: ctx, restoring: true}
 		for _, v := range gs {
 			schema, key, _ := strings.Cut(v.key, " ")
 			st.gs("set", schema, key, v.value)

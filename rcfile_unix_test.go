@@ -393,12 +393,17 @@ func TestUnsetContext_ScopeUser(t *testing.T) {
 	t.Cleanup(unsetEnvVars)
 
 	_ = Set("http://proxy.example.com:8080", ScopeUser)
+	if !exists(filepath.Join(home, ".bashrc")) {
+		t.Fatal("Set did not create .bashrc")
+	}
 	if err := Unset(ScopeUser); err != nil {
 		t.Fatal(err)
 	}
 
-	if strings.Contains(readFile(t, filepath.Join(home, ".bashrc")), "_proxy=") {
-		t.Error(".bashrc still has proxy after ScopeUser Unset")
+	// There was no rc file before Set, and nothing but its block is left in the
+	// one Set created, so Unset takes the file away again.
+	if exists(filepath.Join(home, ".bashrc")) {
+		t.Errorf(".bashrc still exists after ScopeUser Unset: %q", readFile(t, filepath.Join(home, ".bashrc")))
 	}
 }
 
@@ -601,5 +606,54 @@ func TestSetUser_BashUserDoesNotGetAZshrc(t *testing.T) {
 	}
 	if exists(filepath.Join(home, ".zshrc")) {
 		t.Error("a bash user must not get a .zshrc")
+	}
+}
+
+// zsh reads $ZDOTDIR/.zshrc, not ~/.zshrc, when ZDOTDIR is set.
+func TestSetUser_ZshHonoursZDOTDIR(t *testing.T) {
+	home := setupRC(t, map[string]string{".profile": "export A=1\n"})
+	zdot := filepath.Join(t.TempDir(), "zsh")
+	if err := os.MkdirAll(zdot, 0o755); err != nil { //nolint:gosec // test
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("ZDOTDIR", zdot)
+
+	if err := setUser("http://proxy.example.com:8080"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(zdot, ".zshrc")), "export http_proxy=") {
+		t.Error("$ZDOTDIR/.zshrc did not receive the block")
+	}
+	if exists(filepath.Join(home, ".zshrc")) {
+		t.Error("~/.zshrc must not be created when ZDOTDIR points elsewhere")
+	}
+	if err := unsetUser(); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(zdot, ".zshrc")) {
+		t.Error("$ZDOTDIR/.zshrc should be gone: only go-sysproxy's block was in it")
+	}
+}
+
+// Unset takes back the file Set had to create; a file with content of its own
+// only loses the block.
+func TestUnsetUser_RemovesAFileThatOnlyHeldTheBlock(t *testing.T) {
+	home := setupRC(t, map[string]string{".profile": "export A=1\n"})
+	t.Setenv("SHELL", "/bin/zsh")
+	if err := setUser("http://proxy.example.com:8080"); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(filepath.Join(home, ".zshrc")) {
+		t.Fatal("the zsh rc file was not created")
+	}
+	if err := unsetUser(); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(home, ".zshrc")) {
+		t.Error("an empty ~/.zshrc was left behind")
+	}
+	if got := readFile(t, filepath.Join(home, ".profile")); got != "export A=1\n" {
+		t.Errorf(".profile = %q, want its original content", got)
 	}
 }

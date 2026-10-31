@@ -693,16 +693,51 @@ func TestLinuxGetGlobalConfig_IPv6HostsAreBracketed(t *testing.T) {
 	}
 }
 
-// kwriteconfig without kreadconfig (a partial KDE install) can change the
-// proxy but not read it back, so WithProxy cannot promise a restore and has to
-// refuse before it changes anything.
-func TestLinuxSnapshot_KDEWithoutKreadconfigIsAnError(t *testing.T) {
-	f := installFakeDesktop(t, "kwriteconfig6")
-	_, err := snapshotGlobal(context.Background())
-	if !errors.Is(err, ErrToolMissing) {
-		t.Fatalf("snapshotGlobal = %v, want ErrToolMissing", err)
+// kwriteconfig without kreadconfig (a partial KDE install) cannot be restored
+// from, so KDE counts as absent: nothing is written there and WithProxy keeps
+// working with the desktop that is usable.
+func TestLinuxKDE_NeedsBothTools(t *testing.T) {
+	f := installFakeDesktop(t, "gsettings", "kwriteconfig6")
+	ctx := context.Background()
+	p, _ := parse("http://proxy.example.com:8080")
+	if err := setGlobal(ctx, p); err != nil {
+		t.Fatal(err)
 	}
 	if strings.Contains(f.calls(), "kwriteconfig") {
-		t.Errorf("snapshot must not write anything:\n%s", f.calls())
+		t.Errorf("KDE was written although it cannot be read back:\n%s", f.calls())
+	}
+	restore, err := snapshotGlobal(ctx)
+	if err != nil {
+		t.Fatalf("snapshotGlobal: %v", err)
+	}
+	if err := restore(ctx); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+}
+
+func TestLinuxKDEOnlyWithoutKreadconfigIsToolMissing(t *testing.T) {
+	installFakeDesktop(t, "kwriteconfig6")
+	p, _ := parse("http://proxy.example.com:8080")
+	if err := setGlobal(context.Background(), p); !errors.Is(err, ErrToolMissing) {
+		t.Fatalf("setGlobal = %v, want ErrToolMissing", err)
+	}
+}
+
+// The sudo warning is about what a Set changed; putting a saved state back
+// reports nothing of the kind.
+func TestLinuxRestoreUnderSudoIsQuiet(t *testing.T) {
+	installFakeDesktop(t, "gsettings", "kwriteconfig6", "kreadconfig6")
+	t.Setenv("SUDO_USER", "alice")
+	ctx := context.Background()
+	restore, err := snapshotGlobal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := parse("http://proxy.example.com:8080")
+	if err := setGlobal(ctx, p); !IsNonCritical(err) {
+		t.Fatalf("setGlobal under sudo = %v, want the warning", err)
+	}
+	if err := restore(ctx); err != nil {
+		t.Errorf("restore under sudo = %v, want nil", err)
 	}
 }

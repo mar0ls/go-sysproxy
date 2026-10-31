@@ -81,12 +81,12 @@ export http_proxy='http://proxy.example.com:8080'
 ```
 
 - `Set` / `SetPAC` replace the block; `SetMulti` updates only the variables it is given. Repeating a call never adds lines.
-- Only rc files that already exist are edited (`~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.bash_profile`). If none exists, one is created for your `$SHELL` (`~/.zshrc` on macOS). zsh users always get a `~/.zshrc` block, since zsh reads neither `~/.profile` nor `~/.bashrc`. go-sysproxy never creates `~/.bash_profile` next to an existing `~/.profile`, because that would stop bash login shells from reading `~/.profile`.
+- Only rc files that already exist are edited (`~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.bash_profile`). If none exists, one is created for your `$SHELL` (`~/.zshrc` on macOS). zsh users always get a `.zshrc` block (in `$ZDOTDIR` when it is set), since zsh reads neither `~/.profile` nor `~/.bashrc`. `Unset` removes the block and deletes a file that held nothing else. go-sysproxy never creates `~/.bash_profile` next to an existing `~/.profile`, because that would stop bash login shells from reading `~/.profile`.
 - Files are replaced atomically; mode, owner and symlinks (dotfile managers) are preserved.
 - `Unset` removes the block, plus the unmarked `export …_proxy=` / `$env:…_proxy =` lines that versions ≤ 0.5 wrote. Other lines — including your own `NO_PROXY` — are kept.
 - The default `no_proxy` (`localhost,127.0.0.1,::1`) is not written if the file already defines `no_proxy` / `NO_PROXY`.
 - On Windows the block goes into Windows PowerShell's profile (`Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`, following a OneDrive-redirected Documents folder) and, when `Documents\PowerShell` already exists, into PowerShell 7's profile too.
-- Values are shell-quoted (PowerShell-quoted on Windows). A proxy URL, PAC URL or `NoProxy` entry cannot inject commands. `NoProxy` may only contain host-name characters (letters and digits of any script, so internationalised names work), `*`, `/`, `:`, `,`, `;`, `[]`, `<>`, `%` and spaces; proxy and PAC URLs may not contain whitespace or control characters.
+- Values are shell-quoted (PowerShell-quoted on Windows). A proxy URL, PAC URL or `NoProxy` entry cannot inject commands. `NoProxy` may only contain ASCII host-name characters (write internationalised names in punycode, `xn--…`), `*`, `/`, `:`, `,`, `;`, `[]`, `<>`, `%` and spaces; proxy and PAC URLs may not contain whitespace or control characters.
 
 ## API
 
@@ -143,7 +143,7 @@ err := sysproxy.SetMulti(sysproxy.ProxyConfig{
 
 `SetMultiContext` is also available when you want the same API with cancellation support.
 
-Fields left empty are not changed, on every OS: a `NoProxy` alone neither switches the manual proxy on nor replaces a PAC URL, and on Windows a single kind keeps the other `http=`/`https=`/`socks=` entries of `ProxyServer`.
+Fields left empty are not changed, on every OS: a `NoProxy` alone neither switches the manual proxy on nor replaces a PAC URL, and on Windows a single kind keeps the other `http=`/`https=`/`socks=` entries of `ProxyServer`. On Linux, KDE settings are written (and restored by `WithProxy`) only when both `kwriteconfig` and `kreadconfig` exist.
 
 ### PAC file
 

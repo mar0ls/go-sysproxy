@@ -189,6 +189,12 @@ func TestDropIfUserDefined_RecognisesCommonDefinitionForms(t *testing.T) {
 		"indented":          "  export no_proxy=corp.local\n",
 		"powershell":        "$env:NO_PROXY = 'corp.local'\n",
 		"after other lines": "alias ll='ls -l'\nexport PATH=$HOME/bin:$PATH\nNO_PROXY=corp.local\n",
+		"typeset -gx":       "typeset -gx no_proxy=corp.local\n",
+		"declare -gx":       "declare -gx NO_PROXY=corp.local\n",
+		"after another var": "export FOO=1 no_proxy=corp.local\n",
+		"quoted with space": "NO_PROXY=\"corp.local, other.local\"\n",
+		"two assignments":   "A=1 no_proxy=corp.local\n",
+		"local":             "local no_proxy=corp.local\n",
 	}
 	for name, content := range defined {
 		got := dropIfUserDefined(body, content, noProxyNames)
@@ -202,6 +208,9 @@ func TestDropIfUserDefined_RecognisesCommonDefinitionForms(t *testing.T) {
 		"another variable":   "export no_proxy_old=corp.local\nexport MY_NO_PROXY=x\n",
 		"value mentions it":  "echo no_proxy=corp.local\n",
 		"empty":              "",
+		"only for a command": "no_proxy=corp.local curl https://example.com\n",
+		"export w/o value":   "export no_proxy\n",
+		"unrelated export":   "export FOO=1 BAR=2\n",
 		"managed block only": "# >>> go-sysproxy >>>\nexport no_proxy='x'\n# <<< go-sysproxy <<<\n",
 	}
 	for name, content := range notDefined {

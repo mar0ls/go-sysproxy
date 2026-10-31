@@ -782,16 +782,70 @@ func TestUnsetEnvVars_ClearsEveryManagedVariable(t *testing.T) {
 	}
 }
 
-// Non-ASCII host names are legitimate bypass entries; dangerous characters stay out.
-func TestValidateNoProxy_InternationalHostNames(t *testing.T) {
-	for _, ok := range []string{"*.münchen.de", "例え.jp", "пример.рф,localhost", "köln.de;10.0.0.0/8"} {
+// Internationalised host names are written in punycode: profile files and code
+// pages do not all read non-ASCII text back unchanged. The error says so.
+func TestValidateNoProxy_NonASCIINamesPointToPunycode(t *testing.T) {
+	for _, ok := range []string{"*.xn--mnchen-3ya.de", "xn--r8jz45g.jp,localhost"} {
 		if err := validateNoProxy(ok); err != nil {
 			t.Errorf("validateNoProxy(%q) = %v, want ok", ok, err)
 		}
 	}
-	for _, bad := range []string{"a\u202eb", "a\u200bb", "a\u2028b", "x\u0085y", "ä'b", "ä\"b", "ä$b"} {
+	for _, bad := range []string{"*.münchen.de", "例え.jp", "пример.рф"} {
+		err := validateNoProxy(bad)
+		if err == nil || !strings.Contains(err.Error(), "punycode") {
+			t.Errorf("validateNoProxy(%q) = %v, want a punycode hint", bad, err)
+		}
+	}
+	for _, bad := range []string{"a\u202eb", "a\u200bb", "a\u2028b", "x\u0085y", "a'b", "a\"b", "a$b"} {
 		if err := validateNoProxy(bad); err == nil {
 			t.Errorf("validateNoProxy(%q) accepted a control, format or shell character", bad)
+		}
+	}
+}
+
+// Every variable the env setters write is one Unset clears and WithProxy
+// snapshots; a new variable cannot be added to one list only.
+func TestEnvSetters_OnlyTouchManagedVariables(t *testing.T) {
+	managed := map[string]bool{}
+	for _, k := range proxyEnvNames {
+		managed[k] = true
+	}
+	snap := func() map[string]string {
+		m := map[string]string{}
+		for _, kv := range os.Environ() {
+			k, v, _ := strings.Cut(kv, "=")
+			m[k] = v
+		}
+		return m
+	}
+	for name, set := range map[string]func(){
+		"setEnvVars":    func() { setEnvVars("http://p:1") },
+		"setEnvVarsPAC": func() { setEnvVarsPAC("http://p/x.pac") },
+		"setEnvVarsMulti": func() {
+			setEnvVarsMulti(ProxyConfig{HTTP: "http://a:1", HTTPS: "http://b:2", SOCKS: "socks5://c:3", NoProxy: "x"})
+		},
+	} {
+		before := snap()
+		set()
+		for k, v := range snap() {
+			if old, ok := before[k]; (!ok || old != v) && !managed[k] {
+				t.Errorf("%s set %s, which is not in proxyEnvNames", name, k)
+			}
+		}
+		unsetEnvVars()
+	}
+}
+
+func TestJoinHostPort(t *testing.T) {
+	cases := [][3]string{
+		{"proxy.example.com", "8080", "proxy.example.com:8080"},
+		{"::1", "8080", "[::1]:8080"},
+		{"[::1]", "8080", "[::1]:8080"}, // already bracketed: no second pair
+		{"fd00::5", "1080", "[fd00::5]:1080"},
+	}
+	for _, c := range cases {
+		if got := joinHostPort(c[0], c[1]); got != c[2] {
+			t.Errorf("joinHostPort(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
 		}
 	}
 }

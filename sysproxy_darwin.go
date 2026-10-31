@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"reflect"
 	"strings"
 )
@@ -159,7 +158,7 @@ func getGlobal(ctx context.Context) (string, error) {
 			if i == 2 {
 				scheme = "socks5"
 			}
-			return scheme + "://" + net.JoinHostPort(h, p), nil
+			return scheme + "://" + joinHostPort(h, p), nil
 		}
 	}
 	if pac, ok := readMacPAC(ctx, svc); ok {
@@ -243,7 +242,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 		if err == nil {
 			h, p, ok := parseNSProxyOutput(string(out))
 			if ok && h != "" && p != "0" {
-				*q.dest = q.scheme + "://" + net.JoinHostPort(h, p)
+				*q.dest = q.scheme + "://" + joinHostPort(h, p)
 			}
 		}
 	}
