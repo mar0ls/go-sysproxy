@@ -2,11 +2,12 @@ package sysproxy
 
 import "testing"
 
+// A bare host:port is an HTTP proxy; reporting it as SOCKS too was wrong.
 func TestParseWindowsProxyServer_Single(t *testing.T) {
 	cfg := parseWindowsProxyServer("proxy.example.com:8080")
 	if cfg.HTTP != "http://proxy.example.com:8080" ||
 		cfg.HTTPS != "http://proxy.example.com:8080" ||
-		cfg.SOCKS != "socks5://proxy.example.com:8080" {
+		cfg.SOCKS != "" {
 		t.Errorf("single-value parse mismatch: %+v", cfg)
 	}
 }

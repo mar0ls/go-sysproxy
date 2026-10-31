@@ -3,14 +3,14 @@ package sysproxy
 import "strings"
 
 // parseWindowsProxyServer converts a ProxyServer registry value to ProxyConfig.
-// The value is either "host:port" (single proxy for all protocols) or
-// "http=h:p;https=h:p;socks=h:p" (per-protocol).
+// The value is either "host:port" (one HTTP proxy for the HTTP and HTTPS
+// protocols; SOCKS needs its own entry) or "http=h:p;https=h:p;socks=h:p"
+// (per-protocol).
 func parseWindowsProxyServer(server string) ProxyConfig {
 	var cfg ProxyConfig
 	if !strings.Contains(server, "=") {
 		cfg.HTTP = "http://" + server
 		cfg.HTTPS = "http://" + server
-		cfg.SOCKS = "socks5://" + server
 		return cfg
 	}
 	for _, part := range strings.Split(server, ";") {
