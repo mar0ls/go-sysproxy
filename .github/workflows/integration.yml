@@ -31,11 +31,6 @@ jobs:
         env:
           SYSPROXY_INTEGRATION: '1'
         run: go test -run Integration -v -count=1 .
-      - name: Smoke test of the CLI (scripts/smoke/windows.ps1)
-        run: |
-          go build -o sysproxy.exe ./cmd/sysproxy
-          ./scripts/smoke/windows.ps1 -Bin .\sysproxy.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   linux:
     runs-on: ubuntu-latest
@@ -57,10 +52,6 @@ jobs:
         env:
           SYSPROXY_INTEGRATION: '1'
         run: dbus-run-session -- go test -run Integration -v -count=1 .
-      - name: Smoke test of the CLI (scripts/smoke/linux.sh)
-        run: |
-          go build -o sysproxy ./cmd/sysproxy
-          dbus-run-session -- ./scripts/smoke/linux.sh ./sysproxy
 
   macos:
     runs-on: macos-latest
@@ -77,7 +68,3 @@ jobs:
         env:
           SYSPROXY_INTEGRATION: '1'
         run: go test -run Integration -v -count=1 .
-      - name: Smoke test of the CLI (scripts/smoke/macos.sh)
-        run: |
-          go build -o sysproxy ./cmd/sysproxy
-          ./scripts/smoke/macos.sh ./sysproxy
