@@ -199,7 +199,11 @@ func TestIntegrationWindows_RegistryWriteDeniedIsReported(t *testing.T) {
 
 	const key = `HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 	ps := func(script string) string {
-		out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput() //nolint:gosec
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script) //nolint:gosec
+		// A PSModulePath inherited from PowerShell 7 keeps Windows PowerShell from
+		// loading Microsoft.PowerShell.Security (Get-Acl).
+		cmd.Env = withoutEnv(os.Environ(), "PSModulePath")
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("powershell: %v\n%s", err, out)
 		}
@@ -244,7 +248,9 @@ func TestIntegrationWindows_UserScopeProfile(t *testing.T) {
 	sentinel := filepath.Join(home, "pwned.txt")
 
 	evalProfile := func(vars ...string) []string {
-		script := ". '" + profile + "'; "
+		// UTF-8 output: the console code page cannot represent U+2019 and would
+		// turn it into an ASCII quote.
+		script := "[Console]::OutputEncoding = [Text.Encoding]::UTF8; . '" + profile + "'; "
 		for _, v := range vars {
 			script += "[Console]::Out.WriteLine([string]$env:" + v + "); "
 		}
@@ -298,4 +304,15 @@ func TestIntegrationWindows_UserScopeProfile(t *testing.T) {
 	if string(data) != orig {
 		t.Errorf("profile changed:\n got: %q\nwant: %q", data, orig)
 	}
+}
+
+// withoutEnv returns env without the variable called name (case-insensitive).
+func withoutEnv(env []string, name string) []string {
+	var out []string
+	for _, kv := range env {
+		if k, _, _ := strings.Cut(kv, "="); !strings.EqualFold(k, name) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
