@@ -191,3 +191,27 @@ func TestGetText(t *testing.T) {
 		t.Errorf("real error: code=%d stderr=%q", code, stderr)
 	}
 }
+
+// Some backends (KDE) store the login inside the proxy URL; get must not print it.
+func TestGet_NeverPrintsPasswords(t *testing.T) {
+	cfg := sysproxy.ProxyConfig{
+		HTTP:  "http://alice:s3cr3tpw@proxy.example.com:8080",
+		SOCKS: "socks5://bob:hunter2@proxy.example.com:1080",
+		PAC:   "https://carol:pacpw@pac.example.com/p.pac",
+	}
+	stubGet(t, cfg.HTTP, nil, cfg, nil)
+	for _, args := range [][]string{{"get"}, {"get", "--json"}} {
+		code, out, errOut := runCLI(args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d (%s)", args, code, errOut)
+		}
+		for _, secret := range []string{"s3cr3tpw", "hunter2", "pacpw"} {
+			if strings.Contains(out+errOut, secret) {
+				t.Errorf("%v leaks %q:\n%s", args, secret, out)
+			}
+		}
+		if !strings.Contains(out, "proxy.example.com:8080") {
+			t.Errorf("%v lost the host:\n%s", args, out)
+		}
+	}
+}

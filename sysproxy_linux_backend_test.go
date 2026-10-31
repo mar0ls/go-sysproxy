@@ -608,3 +608,29 @@ func TestLinuxNoKDEWriteTool_IsReported(t *testing.T) {
 		t.Errorf("err = %v, want ErrToolMissing", err)
 	}
 }
+
+// Found on a real Plasma 6 VM: unset left the stored URLs, credentials
+// included, in kioslaverc.
+func TestLinuxKDE_UnsetLeavesNoCredentialsBehind(t *testing.T) {
+	f := installFakeDesktop(t, "kwriteconfig6", "kreadconfig6")
+	ctx := context.Background()
+	p, _ := parse("http://alice:s3cr3tpw@proxy.example.com:8080")
+	// The warning that /etc/environment got no credentials is expected.
+	if err := setGlobal(ctx, p); err != nil && !IsNonCritical(err) {
+		t.Fatal(err)
+	}
+	if err := unsetGlobal(ctx); err != nil && !IsNonCritical(err) {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"httpProxy", "httpsProxy", "ftpProxy", "socksProxy"} {
+		if got := f.kde(key); got != "" {
+			t.Errorf("%s still holds %q after unset", key, got)
+		}
+	}
+	if f.kde("ProxyType") != "0" {
+		t.Errorf("ProxyType = %q, want 0", f.kde("ProxyType"))
+	}
+	if _, err := getGlobal(ctx); !errors.Is(err, ErrProxyNotSet) {
+		t.Errorf("getGlobal after unset = %v, want ErrProxyNotSet", err)
+	}
+}

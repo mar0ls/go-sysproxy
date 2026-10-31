@@ -175,6 +175,8 @@ func cmdGet(jsonOut bool, stdout, stderr io.Writer) int {
 			return 2
 		}
 		// A PAC URL alone counts as configured: GetConfig reports it in cfg.PAC.
+		// Some backends (KDE) store the login in the URL; never print it.
+		cfg.HTTP, cfg.HTTPS, cfg.SOCKS, cfg.PAC = redactProxy(cfg.HTTP), redactProxy(cfg.HTTPS), redactProxy(cfg.SOCKS), redactProxy(cfg.PAC)
 		printJSON(stdout, cfg)
 		return 0
 	}
@@ -182,7 +184,7 @@ func cmdGet(jsonOut bool, stdout, stderr io.Writer) int {
 	url, err := getProxy(ctx)
 	switch {
 	case err == nil:
-		_, _ = fmt.Fprintln(stdout, url)
+		_, _ = fmt.Fprintln(stdout, redactProxy(url))
 		return 0
 	case !isNotSet(err):
 		_, _ = fmt.Fprintln(stderr, "error: get failed: "+err.Error())
@@ -265,6 +267,9 @@ func parseScope(s string) (sysproxy.ProxyScope, error) {
 // redactProxy masks the password of a proxy URL before it is echoed to the
 // terminal or a log pipeline.
 func redactProxy(raw string) string {
+	if raw == "" {
+		return ""
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "<invalid URL>"

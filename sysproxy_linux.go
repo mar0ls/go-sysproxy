@@ -185,6 +185,11 @@ func unsetGlobal(ctx context.Context) error {
 	}
 	if kde {
 		st.kde("ProxyType", "0")
+		// ProxyType=0 already disables the proxy; the stored URLs may carry
+		// credentials, so they are not left behind either.
+		for _, key := range []string{"httpProxy", "httpsProxy", "ftpProxy", "socksProxy", "Proxy Config Script"} {
+			st.kde(key, "")
+		}
 	}
 	etcErr := etcEnvironmentResult(clearEtcEnvironment(etcEnvironmentPath))
 	return st.finish(gnome || kde, etcErr, etcEnvironmentPath+" could not be cleared")

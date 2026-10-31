@@ -326,7 +326,7 @@ _ = sysproxy.WriteAppConfig(sysproxy.AppCurl, "http://username:password@proxy.pr
 | ScopeUser (rc files) | ✓ | ✓ | ✓ | ✓ |
 | Credential Manager | — | — | — | ✓ |
 
-> **Linux:** `ScopeGlobal` writes `/etc/environment` (requires root) and calls `gsettings` **and** `kwriteconfig6` / `kwriteconfig5` if available (Plasma 6 is preferred, both read the same `kioslaverc`), so hybrid GNOME/KDE setups are covered without desktop detection. Failure to write `/etc/environment` is returned as a non-critical error — use `sysproxy.IsNonCritical(err)` to distinguish it from a hard failure.
+> **Linux:** `ScopeGlobal` writes `/etc/environment` (requires root) and calls `gsettings` **and** `kwriteconfig6` / `kwriteconfig5` if available (Plasma 6 is preferred, both read the same `kioslaverc`), so hybrid GNOME/KDE setups are covered without desktop detection. Failure to write `/etc/environment` is returned as a non-critical error — use `sysproxy.IsNonCritical(err)` to distinguish it from a hard failure. KDE keeps the proxy URL, login included, in `~/.config/kioslaverc` (GNOME and `/etc/environment` get no credentials); `Unset` empties those keys, and the CLI's `get` always masks the password.
 >
 > `gsettings set` exits 0 even when no D-Bus session bus / dconf service is reachable (plain `ssh` or `sudo`), in which case it stores nothing. go-sysproxy reads the value back and returns a hard error if it was not stored, so run it from the desktop session.
 >
