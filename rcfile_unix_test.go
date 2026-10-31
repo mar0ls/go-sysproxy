@@ -543,3 +543,25 @@ func clearProxyEnv(t *testing.T) {
 		_ = os.Unsetenv(k)
 	}
 }
+
+func TestSetUser_WarnsWhenRunAsRootThroughSudoWithRootsHome(t *testing.T) {
+	home := setTestHome(t)
+	asRoot(t, true)
+	t.Setenv("SUDO_USER", "alice")
+	t.Setenv("SHELL", "/bin/bash")
+	fakeUserHome(t, map[string]string{"alice": "/home/alice"})
+
+	err := setUser("http://proxy.example.com:8080")
+	if !IsNonCritical(err) {
+		t.Fatalf("setUser: err = %v, want a non-critical warning", err)
+	}
+	b, rerr := os.ReadFile(filepath.Join(home, ".bashrc")) //nolint:gosec // test path
+	if rerr != nil || !strings.Contains(string(b), "proxy.example.com") {
+		t.Errorf("the rc file must still have been written: %q, %v", b, rerr)
+	}
+
+	fakeUserHome(t, map[string]string{"alice": home})
+	if err := setUser("http://proxy.example.com:8080"); err != nil {
+		t.Errorf("HOME is the caller's home: err = %v, want nil", err)
+	}
+}

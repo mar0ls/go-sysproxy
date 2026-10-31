@@ -76,38 +76,23 @@ func installFakeDesktop(t *testing.T, tools ...string) *fakeDesktop {
 			t.Fatal(err)
 		}
 	}
-	// Only the fake bin dir plus the system dirs holding sh/cat/mkdir; a real
-	// gsettings in /usr/bin would be shadowed, but make sure none leaks in.
+	// The fake bin dir is the only place system tools are looked up, and a
+	// "privileged" process never falls back to PATH, so a real gsettings or
+	// kwriteconfig on the machine can neither shadow nor replace the fakes.
+	// PATH still has to provide sh, cat and mkdir to the fake scripts.
 	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	origDirs, origPriv := systemToolDirs, privileged
+	systemToolDirs = func() []string { return []string{bin} }
+	privileged = func() bool { return true }
+	t.Cleanup(func() { systemToolDirs, privileged = origDirs, origPriv })
+	t.Setenv("SUDO_USER", "")
 	t.Setenv("FAKE_DB", f.dir)
 	t.Setenv("FAKE_FAIL", "")
 	t.Setenv("FAKE_NOSTORE", "")
 	orig := etcEnvironmentPath
 	etcEnvironmentPath = f.etc
 	t.Cleanup(func() { etcEnvironmentPath = orig })
-	for _, tool := range []string{"gsettings", "kwriteconfig5", "kreadconfig5", "kwriteconfig6", "kreadconfig6"} {
-		if p, err := lookPathIn(bin, tool); err != nil || !strings.HasPrefix(p, bin) {
-			if !contains(tools, tool) && isAvailable(tool) {
-				t.Skipf("a real %s is in PATH and cannot be hidden", tool)
-			}
-		}
-	}
 	return f
-}
-
-func contains(l []string, s string) bool {
-	for _, v := range l {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-func lookPathIn(dir, name string) (string, error) {
-	p := filepath.Join(dir, name)
-	_, err := os.Stat(p)
-	return p, err
 }
 
 func (f *fakeDesktop) gs(schema, key string) string {
@@ -632,5 +617,62 @@ func TestLinuxKDE_UnsetLeavesNoCredentialsBehind(t *testing.T) {
 	}
 	if _, err := getGlobal(ctx); !errors.Is(err, ErrProxyNotSet) {
 		t.Errorf("getGlobal after unset = %v, want ErrProxyNotSet", err)
+	}
+}
+
+// S2: under sudo the desktop settings go to root's account. The change is
+// applied, so the result is a warning that names the invoking user.
+func TestLinuxGlobal_WarnsWhenRunAsRootThroughSudo(t *testing.T) {
+	f := installFakeDesktop(t, "gsettings", "kwriteconfig6", "kreadconfig6")
+	ctx := context.Background()
+	p, _ := parse("http://proxy.example.com:8080")
+	ops := map[string]func() error{
+		"Set":      func() error { return setGlobal(ctx, p) },
+		"SetPAC":   func() error { return setGlobalPAC(ctx, "https://example.com/p.pac") },
+		"SetMulti": func() error { return setGlobalMulti(ctx, ProxyConfig{HTTP: "http://proxy.example.com:8080"}) },
+		"Unset":    func() error { return unsetGlobal(ctx) },
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("SUDO_USER", "")
+			if err := op(); err != nil {
+				t.Fatalf("without sudo: %v", err)
+			}
+
+			t.Setenv("SUDO_USER", "alice")
+			err := op()
+			if !IsNonCritical(err) {
+				t.Fatalf("under sudo: err = %v, want a non-critical warning", err)
+			}
+			if !strings.Contains(err.Error(), "SUDO_USER=alice") {
+				t.Errorf("the warning does not name the user: %v", err)
+			}
+			if f.gs("org.gnome.system.proxy", "mode") == "" {
+				t.Errorf("the settings were not applied; calls:\n%s", f.calls())
+			}
+		})
+	}
+}
+
+func TestLinuxGlobal_SudoWarningNeverHidesAFailure(t *testing.T) {
+	installFakeDesktop(t, "gsettings")
+	t.Setenv("SUDO_USER", "alice")
+	t.Setenv("FAKE_FAIL", "proxy.https host")
+	p, _ := parse("http://proxy.example.com:8080")
+	err := setGlobal(context.Background(), p)
+	if err == nil || IsNonCritical(err) {
+		t.Fatalf("err = %v, want a hard error", err)
+	}
+}
+
+// Not as root (the helper makes the process "privileged", so undo that): a
+// SUDO_USER left in the environment means nothing.
+func TestLinuxGlobal_NoSudoWarningWithoutRoot(t *testing.T) {
+	installFakeDesktop(t, "gsettings")
+	privileged = func() bool { return false }
+	t.Setenv("SUDO_USER", "alice")
+	p, _ := parse("http://proxy.example.com:8080")
+	if err := setGlobal(context.Background(), p); err != nil {
+		t.Fatalf("err = %v, want nil", err)
 	}
 }

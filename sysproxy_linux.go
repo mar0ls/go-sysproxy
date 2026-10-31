@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -29,7 +28,7 @@ func etcEnvironmentResult(err error) error {
 }
 
 func runGsettings(ctx context.Context, args ...string) error {
-	out, err := exec.CommandContext(normalizeContext(ctx), "gsettings", args...).CombinedOutput() //nolint:gosec
+	out, err := systemCommand(ctx, "gsettings", args...).CombinedOutput()
 	return execError("gsettings", gsWhat(args), err, out)
 }
 
@@ -38,7 +37,7 @@ func runKwriteconfig(ctx context.Context, args ...string) error {
 	if tool == "" {
 		return fmt.Errorf("%w: kwriteconfig6/kwriteconfig5", ErrToolMissing)
 	}
-	out, err := exec.CommandContext(normalizeContext(ctx), tool, args...).CombinedOutput() //nolint:gosec // tool is a fixed allowlist
+	out, err := systemCommand(ctx, tool, args...).CombinedOutput()
 	return execError(tool, kdeWhat(args), err, out)
 }
 
@@ -65,7 +64,7 @@ const gnomeProxySchema = "org.gnome.system.proxy"
 // gnomeUsable reports whether gsettings exists and knows the GNOME proxy
 // schema. gsettings alone is not enough: it ships with glib on KDE systems too.
 func gnomeUsable(ctx context.Context) bool {
-	return isAvailable("gsettings") && runGsettings(ctx, "list-keys", gnomeProxySchema) == nil
+	return hasSystemTool("gsettings") && runGsettings(ctx, "list-keys", gnomeProxySchema) == nil
 }
 
 func kdeWritable() bool { return kwriteconfigBinary() != "" }
@@ -99,7 +98,7 @@ func (s *steps) kde(key, value string) {
 // backend and the change vanishes with the process. Only a read-back from a
 // new process proves the value was stored.
 func (s *steps) verify(schema, key, want string) {
-	out, err := exec.CommandContext(normalizeContext(s.ctx), "gsettings", "get", schema, key).Output() //nolint:gosec
+	out, err := systemCommand(s.ctx, "gsettings", "get", schema, key).Output()
 	got := unquoteGVariant(string(out))
 	if err != nil || got != unquoteGVariant(want) {
 		s.errs = append(s.errs, fmt.Errorf(
@@ -118,6 +117,8 @@ func unquoteGVariant(v string) string { return strings.Trim(strings.TrimSpace(v)
 //   - a desktop step failed: hard error (the /etc/environment problem is folded
 //     in as text so the result cannot be mistaken for a warning);
 //   - only /etc/environment failed: that warning, as non-critical;
+//   - everything worked but the process runs as root through sudo: a
+//     non-critical warning that the desktop settings are root's, not the user's;
 //   - nothing could run at all: ErrToolMissing.
 func (s *steps) finish(desktop bool, etcErr error, what string) error {
 	if len(s.errs) > 0 {
@@ -133,7 +134,10 @@ func (s *steps) finish(desktop bool, etcErr error, what string) error {
 		}
 		return nil
 	}
-	return etcErr
+	if etcErr != nil && !IsNonCritical(etcErr) {
+		return etcErr
+	}
+	return combine(etcErr, sudoDesktopWarning())
 }
 
 // noDesktopTool is the error for operations that only have desktop settings to
@@ -214,7 +218,7 @@ func getGlobal(ctx context.Context) (string, error) {
 }
 
 func getGlobalGnome(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy", "mode").Output()
+	out, err := systemCommand(ctx, "gsettings", "get", "org.gnome.system.proxy", "mode").Output()
 	if err != nil {
 		return "", fmt.Errorf("sysproxy: gsettings mode: %w", err)
 	}
@@ -226,8 +230,8 @@ func getGlobalGnome(ctx context.Context) (string, error) {
 	// socks5:// URL can be read back).
 	for _, q := range []struct{ proto, scheme string }{{"http", "http"}, {"https", "http"}, {"socks", "socks5"}} {
 		schema := gnomeProxySchema + "." + q.proto
-		host, err1 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", schema, "host").Output() //nolint:gosec
-		port, err2 := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", schema, "port").Output() //nolint:gosec
+		host, err1 := systemCommand(ctx, "gsettings", "get", schema, "host").Output()
+		port, err2 := systemCommand(ctx, "gsettings", "get", schema, "port").Output()
 		if err1 != nil || err2 != nil {
 			return "", fmt.Errorf("sysproxy: cannot read proxy settings")
 		}
@@ -242,7 +246,7 @@ func getGlobalGnome(ctx context.Context) (string, error) {
 
 // gsettingsField reads a single string field from a gsettings schema.
 func gsettingsField(ctx context.Context, schema, key string) string {
-	out, err := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", schema, key).Output() //nolint:gosec
+	out, err := systemCommand(ctx, "gsettings", "get", schema, key).Output()
 	if err != nil {
 		return ""
 	}
@@ -315,7 +319,7 @@ func getGlobalConfigGnome(ctx context.Context) (ProxyConfig, error) {
 		}
 	}
 
-	raw, _ := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", "org.gnome.system.proxy", "ignore-hosts").Output()
+	raw, _ := systemCommand(ctx, "gsettings", "get", "org.gnome.system.proxy", "ignore-hosts").Output()
 	cfg.NoProxy = parseGsettingsArray(string(raw))
 
 	if cfg.HTTP == "" && cfg.HTTPS == "" && cfg.SOCKS == "" {
@@ -466,7 +470,7 @@ func kdeRead(ctx context.Context, key string) (string, error) {
 	if tool == "" {
 		return "", ErrToolMissing
 	}
-	out, err := exec.CommandContext(normalizeContext(ctx), tool, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", key).Output() //nolint:gosec
+	out, err := systemCommand(ctx, tool, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", key).Output()
 	if err != nil {
 		return "", execError(tool, "--key "+key, err, nil)
 	}
@@ -477,7 +481,7 @@ func snapshotGlobal(ctx context.Context) (restoreFunc, error) {
 	var gs []keyValue // value is the raw GVariant text
 	if gnomeUsable(ctx) {
 		for _, k := range gnomeKeys {
-			out, err := exec.CommandContext(normalizeContext(ctx), "gsettings", "get", k.schema, k.key).Output() //nolint:gosec
+			out, err := systemCommand(ctx, "gsettings", "get", k.schema, k.key).Output()
 			if err != nil {
 				return nil, execError("gsettings", "get "+k.schema+" "+k.key, err, nil)
 			}
@@ -545,3 +549,15 @@ func (linuxBackend) SnapshotGlobal(ctx context.Context) (restoreFunc, error) {
 }
 
 func init() { activeBackend = linuxBackend{} }
+
+// sudoDesktopWarning is the non-critical warning for desktop settings that
+// were written for root's account. It is nil outside sudo.
+func sudoDesktopWarning() error {
+	caller := sudoCaller()
+	if caller == "" {
+		return nil
+	}
+	return &nonCriticalError{err: fmt.Errorf(
+		"sysproxy: running as root through sudo (SUDO_USER=%s): the GNOME/KDE settings were written for root's account, "+
+			"not for %s's desktop session; run without sudo to change the user's own settings", caller, caller)}
+}

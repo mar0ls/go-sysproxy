@@ -13,6 +13,7 @@ import (
 
 var (
 	modWininet   = syscall.NewLazyDLL("wininet.dll")
+	modKernel32  = syscall.NewLazyDLL("kernel32.dll")
 	modShell32   = syscall.NewLazyDLL("shell32.dll")
 	modOle32     = syscall.NewLazyDLL("ole32.dll")
 	procSetOptW  = modWininet.NewProc("InternetSetOptionW")

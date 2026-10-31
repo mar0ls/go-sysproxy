@@ -58,7 +58,7 @@ func WriteAppConfigContext(ctx context.Context, app AppName, proxyURL string) er
 		return fmt.Errorf("sysproxy: unsupported app %q", app)
 	}
 	logf("WriteAppConfig app=%s url=%s err=%v", app, redactURL(proxyURL), err)
-	return err
+	return withWarning(err, sudoHomeWarning())
 }
 
 // ClearAppConfig removes proxy settings from the tool-specific config for app.
@@ -89,7 +89,7 @@ func ClearAppConfigContext(ctx context.Context, app AppName) error {
 		return fmt.Errorf("sysproxy: unsupported app %q", app)
 	}
 	logf("ClearAppConfig app=%s err=%v", app, err)
-	return err
+	return withWarning(err, sudoHomeWarning())
 }
 
 // ── curl (~/.curlrc) ──────────────────────────────────────────────────────────

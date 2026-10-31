@@ -4,7 +4,6 @@ package sysproxy
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 )
 
@@ -22,7 +21,7 @@ func kwriteconfigBinary() string { return firstAvailable("kwriteconfig6", "kwrit
 
 func firstAvailable(names ...string) string {
 	for _, n := range names {
-		if isAvailable(n) {
+		if hasSystemTool(n) {
 			return n
 		}
 	}
@@ -36,7 +35,7 @@ func kreadKey(ctx context.Context, key string) string {
 	if bin == "" {
 		return ""
 	}
-	out, err := exec.CommandContext(normalizeContext(ctx), bin, //nolint:gosec // bin is a fixed allowlist
+	out, err := systemCommand(ctx, bin,
 		"--file", "kioslaverc",
 		"--group", kdeProxyGroup,
 		"--key", key).Output()

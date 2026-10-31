@@ -16,7 +16,7 @@ import (
 const regKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 
 func runReg(ctx context.Context, args ...string) error {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", args...).CombinedOutput() //nolint:gosec
+	out, err := systemCommand(ctx, "reg", args...).CombinedOutput()
 	return execError("reg", regWhat(args), err, out)
 }
 
@@ -112,7 +112,7 @@ func unsetGlobal(ctx context.Context) error {
 // currentProxyHost reads the proxy host from the registry so Unset can clean
 // up Credential Manager without requiring the caller to pass the original URL.
 func currentProxyHost(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
+	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
 		return "", err
 	}
@@ -123,7 +123,7 @@ func currentProxyHost(ctx context.Context) (string, error) {
 }
 
 func getGlobal(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyEnable").Output()
+	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyEnable").Output()
 	if err != nil {
 		// ProxyEnable missing → check PAC
 		if pac, perr := readAutoConfigURL(ctx); perr == nil && pac != "" {
@@ -137,7 +137,7 @@ func getGlobal(ctx context.Context) (string, error) {
 		}
 		return "", ErrProxyNotEnabled
 	}
-	out, err = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
+	out, err = systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
 		return "", fmt.Errorf("sysproxy: cannot read ProxyServer: %w", err)
 	}
@@ -156,7 +156,7 @@ func getGlobal(ctx context.Context) (string, error) {
 // readAutoConfigURL reads AutoConfigURL from the registry. A missing value
 // returns "" and nil so callers can distinguish "no PAC" from a real error.
 func readAutoConfigURL(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "AutoConfigURL").Output()
+	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", "AutoConfigURL").Output()
 	if err != nil {
 		return "", nil //nolint:nilerr
 	}
@@ -198,7 +198,7 @@ func setGlobalMulti(ctx context.Context, cfg ProxyConfig) error {
 func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 	pac, _ := readAutoConfigURL(ctx)
 
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyEnable").Output()
+	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyEnable").Output()
 	proxyEnabled := err == nil && strings.Contains(string(out), "0x1")
 
 	if !proxyEnabled {
@@ -208,7 +208,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 		return ProxyConfig{}, ErrProxyNotEnabled
 	}
 
-	out, err = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyServer").Output()
+	out, err = systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyServer").Output()
 	if err != nil {
 		return ProxyConfig{}, fmt.Errorf("sysproxy: cannot read ProxyServer: %w", err)
 	}
@@ -219,7 +219,7 @@ func getGlobalConfig(ctx context.Context) (ProxyConfig, error) {
 	cfg := parseWindowsProxyServer(server)
 	cfg.PAC = pac
 
-	out, _ = exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", "ProxyOverride").Output()
+	out, _ = systemCommand(ctx, "reg", "query", regKey, "/v", "ProxyOverride").Output()
 	cfg.NoProxy = extractRegValue(string(out), "ProxyOverride")
 
 	return cfg, nil
@@ -338,7 +338,7 @@ type regValue struct {
 var regValueNames = []string{"ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL"}
 
 func readRegValue(ctx context.Context, name string) (regValue, error) {
-	out, err := exec.CommandContext(normalizeContext(ctx), "reg", "query", regKey, "/v", name).Output() //nolint:gosec
+	out, err := systemCommand(ctx, "reg", "query", regKey, "/v", name).Output()
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {

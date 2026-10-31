@@ -15,7 +15,8 @@ var fileMu sync.Mutex
 // a crash cannot leave one behind.
 //
 // The mode (and, where supported, owner) of an existing file is preserved and
-// perm is used only for new files. Symlinks are followed, so dotfiles managed
+// perm is used only for new files; a new file created by root takes the owner
+// of its directory. Symlinks are followed, so dotfiles managed
 // by stow/chezmoi keep pointing at their target. If the directory is not
 // writable but the file itself is, it falls back to an in-place write.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
@@ -50,6 +51,10 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 	if statErr == nil {
 		preserveOwner(tmp, info)
+	} else if dir, err := os.Stat(filepath.Dir(path)); err == nil && privileged() {
+		// Root creating a file in someone's directory (sudo with HOME kept) must
+		// not leave a root-owned dotfile the user cannot edit.
+		preserveOwner(tmp, dir)
 	}
 	if err := tmp.Sync(); err != nil {
 		return fail(err)

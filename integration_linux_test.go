@@ -38,7 +38,7 @@ func itKDE(t *testing.T, key string) string {
 func itRequireDesktopTools(t *testing.T) {
 	t.Helper()
 	requireIntegration(t)
-	if !isAvailable("gsettings") || kwriteconfigBinary() == "" || kreadconfigBinary() == "" {
+	if !hasSystemTool("gsettings") || kwriteconfigBinary() == "" || kreadconfigBinary() == "" {
 		t.Skip("gsettings and kwriteconfig/kreadconfig (6 or 5) are required")
 	}
 	if !gnomeUsable(context.Background()) {

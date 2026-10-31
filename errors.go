@@ -20,8 +20,10 @@ var (
 	ErrUnsupportedPlatform = errors.New("sysproxy: unsupported platform")
 
 	// ErrToolMissing is returned when a required external tool
-	// (gsettings, networksetup, reg, git, npm, ...) is not available in PATH.
-	ErrToolMissing = errors.New("sysproxy: required tool not found in PATH")
+	// (gsettings, networksetup, reg, git, npm, ...) cannot be found. System
+	// tools are looked up in the system directories first and, for an
+	// unprivileged process, in PATH; git and npm only in PATH.
+	ErrToolMissing = errors.New("sysproxy: required tool not found")
 )
 
 // nonCriticalError wraps errors from operations that do not invalidate the

@@ -116,7 +116,7 @@ func applyRCBlock(body []string, merge bool, yield ...string) error {
 	if written == 0 {
 		return errors.Join(errs...)
 	}
-	return nil
+	return sudoHomeWarning()
 }
 
 func removeRCBlock() error {
