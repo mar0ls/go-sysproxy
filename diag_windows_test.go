@@ -22,7 +22,7 @@ func TestIntegrationWindows_DiagWinINET(t *testing.T) {
 		itRegSet(t, "ProxyServer", "REG_SZ", "tmp.example.com:9999")
 		itRegSet(t, "ProxyOverride", "REG_SZ", "localhost")
 	}
-	for _, opts := range [][]uintptr{{39}, {37}, {39, 37}} {
+	for _, opts := range [][]uintptr{{95}, {95, 39}, {39, 95}} {
 		clear()
 		dump("cleared")
 		fill()
